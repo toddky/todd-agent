@@ -38,7 +38,7 @@ Directories are created when code lands in them, not before.
 
 ## Tool Contract
 
-Every script in `tools/` must follow this contract (see `tools/read` for the reference implementation):
+Every script in `tools/` must follow this contract (see `tools/read_file` for the reference implementation):
 
 - `--schema` as the first argument prints a JSON self-description and exits 0. The object has
   `description`, `input_schema` (JSON Schema for the call arguments), and `timeout_secs`.

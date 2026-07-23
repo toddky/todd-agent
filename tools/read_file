@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Read a file's contents as text. Input: {\"path\": \"<file path>\"}.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "Path of the file to read"}
+    },
+    "required": ["path"]
+  },
+  "timeout_secs": 10
+}
+SCHEMA
+	exit 0
+fi
+
+if ! input_file="$(jq -r '.path // empty' 2>&1)"; then
+	echo "read_file: input is not valid JSON: $input_file" 1>&2
+	exit 2
+fi
+if [[ -z "$input_file" ]]; then
+	echo "read_file: missing required \"path\" in JSON input; expected {\"path\": \"<file>\"}" 1>&2
+	exit 2
+fi
+
+if [[ ! -f "$input_file" ]]; then
+	echo "read_file: file not found: $input_file" 1>&2
+	parent_dir="$(dirname -- "$input_file")"
+	base_name="$(basename -- "$input_file")"
+	# Suggest near-miss names so the model can correct a typo'd path; -i catches case mistakes.
+	# git ls-files is index-only (fast on large repos), ':/' prints repo-root-relative paths, 10 keeps the list short.
+	similar_files="$(git ls-files --full-name ':/' 2>/dev/null | grep -iF "${base_name%.*}" | head -10)"
+	if [[ -z "$similar_files" && -d "$parent_dir" ]]; then
+		similar_files="$(find "$parent_dir" -maxdepth 1 -type f -iname "*${base_name%.*}*" -print 2>/dev/null | head -10)"
+	fi
+	if [[ -n "$similar_files" ]]; then
+		cat 1>&2 <<EOF
+similar files:
+$similar_files
+EOF
+	fi
+	exit 1
+fi
+
+if ! cat -- "$input_file"; then
+	echo "read_file: failed to read: $input_file" 1>&2
+	exit 1
+fi
