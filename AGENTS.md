@@ -25,10 +25,8 @@ todd-agent/
 │       ├── repl/
 │       │   └── repl.go  # plain line REPL frontend
 │       └── tui/         # full-screen TUI frontend (later)
-├── tools/               # executable tool scripts, any language; JSON args on stdin, JSON result on stdout
-│   ├── read_file        # read a file's contents
-│   ├── write_file       # create or overwrite a file
-│   ├── bash             # run a shell command
+├── tools/               # executable tool scripts, any language (see Tool Contract)
+│   ├── read             # read a file's contents
 │   └── ...
 └── docs/
     └── examples/        # reference notes on how other coding agents define tools and hooks
@@ -37,6 +35,17 @@ todd-agent/
 Import direction is one-way: `ui` imports `agent`; `agent` imports `llm` and `tool`; nothing imports `ui`.
 Tool calls exec the matching script in `tools/` so tool behavior can change while an agent is running.
 Directories are created when code lands in them, not before.
+
+## Tool Contract
+
+Every script in `tools/` must follow this contract (see `tools/read` for the reference implementation):
+
+- `--schema` as the first argument prints a JSON self-description and exits 0. The object has
+  `description`, `input_schema` (JSON Schema for the call arguments), and `timeout_secs`.
+  The registry discovers tools by running `--schema` across `tools/*`.
+- A normal call receives JSON arguments on stdin and writes its result text to stdout.
+- Failure reasons go to stderr, never stdout.
+- Exit codes: `0` = success, `1` = runtime failure (e.g. file not found), `2` = malformed call (bad or missing arguments).
 
 ## Operational Rules
 
