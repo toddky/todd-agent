@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/todd-agent/internal/ui/repl"
 )
 
 func main() {
@@ -33,13 +34,8 @@ func main() {
 		Model:   model,
 	}
 
-	response, err := client.Complete([]llm.Message{
-		{Role: "user", Content: "Say hello world."},
-	})
-	if err != nil {
+	if err := repl.Run(client); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-
-	fmt.Println(response.Text())
 }
