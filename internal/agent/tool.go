@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/toddky/todd-agent/internal/llm"
@@ -53,13 +54,14 @@ type Registry struct {
 
 // LoadAll discovers tools by running "<script> --schema" on every
 // executable in dir and parsing the JSON it prints.
+// Schema execs run in parallel so startup costs one exec, not one per tool.
 func LoadAll(dir string) (*Registry, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read tools dir %s: %w", dir, err)
 	}
 
-	registry := &Registry{Dir: dir, Tools: make(map[string]Tool)}
+	var paths []string
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
 		// os.Stat follows symlinks, so linked tool scripts resolve here.
@@ -70,10 +72,26 @@ func LoadAll(dir string) (*Registry, error) {
 		if info.IsDir() || info.Mode()&0o111 == 0 {
 			continue
 		}
+		paths = append(paths, path)
+	}
 
-		tool, err := load(entry.Name(), path)
-		if err != nil {
-			return nil, err
+	// Each goroutine writes only its own slot, so no lock is needed.
+	tools := make([]Tool, len(paths))
+	loadErrs := make([]error, len(paths))
+	var wg sync.WaitGroup
+	for i, path := range paths {
+		wg.Add(1)
+		go func(i int, path string) {
+			defer wg.Done()
+			tools[i], loadErrs[i] = load(filepath.Base(path), path)
+		}(i, path)
+	}
+	wg.Wait()
+
+	registry := &Registry{Dir: dir, Tools: make(map[string]Tool, len(paths))}
+	for i, tool := range tools {
+		if loadErrs[i] != nil {
+			return nil, loadErrs[i]
 		}
 		registry.Tools[tool.Name] = tool
 	}
