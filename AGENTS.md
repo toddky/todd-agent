@@ -47,6 +47,15 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 - Failure reasons go to stderr, never stdout.
 - Exit codes: `0` = success, `1` = runtime failure (e.g. file not found), `2` = malformed call (bad or missing arguments).
 
+## Naming and API Style
+
+- Keep each package's exported API as small as possible. Fold helper steps into the function that needs them instead of exporting them (e.g. tool discovery lives inside `Setup`, not a separate exported function).
+- For a process-scoped singleton, prefer short lifecycle names paired as `Setup`/`Cleanup` over descriptive compounds like `SetupRuntimeTools`/`CleanupRuntimeTools`.
+- Package state is acceptable for something that exists exactly once per process (like the runtime dir); expose it through a getter instead of threading it through every call site.
+- Getter functions start with `Get` (e.g. `GetRuntimeDir`).
+- Name enum-ish fields `Type`, matching the wire format's naming (`ContentBlock.Type`, `Event.Type`), not `Kind`.
+- Inside a package, name the one-item helper after the verb and the collection loader `<Verb>All` (e.g. `load` and `LoadAll`).
+
 ## Operational Rules
 
 - Prefer early returns over deep nesting.
