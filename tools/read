@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+set -euo pipefail
+
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Read a file's contents as text. Input: {\"path\": \"<file path>\"}.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "Path of the file to read"}
+    },
+    "required": ["path"]
+  },
+  "timeout_secs": 10
+}
+SCHEMA
+	exit 0
+fi
+
+if ! path="$(jq -r '.path // empty' 2>&1)"; then
+	echo "read: input is not valid JSON: $path" >&2
+	exit 2
+fi
+if [[ -z "$path" ]]; then
+	echo "read: missing required \"path\" in JSON input; expected {\"path\": \"<file>\"}" >&2
+	exit 2
+fi
+if [[ ! -f "$path" ]]; then
+	echo "read: file not found: $path" >&2
+	exit 1
+fi
+
+cat -- "$path"
