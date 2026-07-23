@@ -1,12 +1,18 @@
 // Package repl is a plain line-based chat frontend.
+//
+// Responses are printed exactly as the model produced them. Never add
+// artificial line wrapping: it makes copy/paste a pain and ruins terminal
+// resizing.
 package repl
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/toddky/todd-agent/internal/llm"
 )
 
@@ -15,28 +21,108 @@ const (
 	green = "\033[38;5;46m"
 )
 
-// Run reads prompts from stdin and prints model responses until EOF (Ctrl-D).
+type inputModel struct {
+	input   textinput.Model
+	done    bool
+	aborted bool
+}
+
+func newInputModel() inputModel {
+	input := textinput.New()
+	input.Prompt = "👤 "
+	input.Focus()
+	return inputModel{input: input}
+}
+
+func (m inputModel) Init() tea.Cmd {
+	return textinput.Blink
+}
+
+func (m inputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.Type {
+		case tea.KeyEnter:
+			m.done = true
+			return m, tea.Quit
+		case tea.KeyCtrlC, tea.KeyCtrlD:
+			m.aborted = true
+			return m, tea.Quit
+		}
+	}
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m inputModel) View() string {
+	if m.done || m.aborted {
+		// Clear the input line on exit; Run reprints the final prompt in green.
+		return ""
+	}
+	return m.input.View()
+}
+
+// readPrompt runs a one-shot textinput program and returns the entered line.
+func readPrompt() (string, error) {
+	final, err := tea.NewProgram(newInputModel()).Run()
+	if err != nil {
+		return "", fmt.Errorf("read input: %w", err)
+	}
+
+	model := final.(inputModel)
+	if model.aborted {
+		return "", errQuit
+	}
+	return model.input.Value(), nil
+}
+
+// readPromptPlain reads one line from the scanner, for piped (non-TTY) stdin.
+func readPromptPlain(scanner *bufio.Scanner) (string, error) {
+	fmt.Print("👤 ")
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("read input: %w", err)
+		}
+		fmt.Println()
+		return "", errQuit
+	}
+	return scanner.Text(), nil
+}
+
+var errQuit = errors.New("quit")
+
+// Run reads prompts from stdin and prints model responses until Ctrl-C/Ctrl-D.
 func Run(client *llm.Client) error {
-	scanner := bufio.NewScanner(os.Stdin)
 	var messages []llm.Message
 
+	stat, _ := os.Stdin.Stat()
+	interactive := stat.Mode()&os.ModeCharDevice != 0
+	var scanner *bufio.Scanner
+	if !interactive {
+		scanner = bufio.NewScanner(os.Stdin)
+	}
+
 	for {
-		fmt.Print("👤 ")
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil && err != io.EOF {
-				return fmt.Errorf("read input: %w", err)
-			}
-			fmt.Println()
+		var prompt string
+		var err error
+		if interactive {
+			prompt, err = readPrompt()
+		} else {
+			prompt, err = readPromptPlain(scanner)
+		}
+		if err == errQuit {
 			return nil
 		}
-
-		prompt := scanner.Text()
+		if err != nil {
+			return err
+		}
 		if prompt == "" {
 			continue
 		}
 
-		// Rewrite the just-entered line so the prompt text turns green, like ,agent2.
-		fmt.Printf("\033[1A\033[2K👤%s %s%s\n", green, prompt, reset)
+		// Echo the submitted prompt in green, like ,agent2.
+		fmt.Printf("👤%s %s%s\n", green, prompt, reset)
 
 		messages = append(messages, llm.Message{Role: "user", Content: prompt})
 
