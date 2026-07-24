@@ -50,6 +50,11 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 - Never pass tool input to a shell reparse (`eval`, `bash -c`); expand paths with facilities that treat the input as data.
 - Error messages echo the original input (e.g. the unexpanded path), never expanded values, so secret env vars cannot leak into model-visible output.
 
+## Dependencies
+
+- External dependencies: `jq` (tool scripts parse their JSON input with it) and optionally `python3` (path expansion in `read_file`). Go dependencies are limited to the bubbletea/bubbles TUI libraries.
+- Never use an external SDK for AI or LLM APIs. The `internal/llm` package speaks the wire format directly with `net/http`.
+
 ## Naming and API Style
 
 - Keep each package's exported API as small as possible. Fold helper steps into the function that needs them instead of exporting them (e.g. tool discovery lives inside `Setup`, not a separate exported function).
