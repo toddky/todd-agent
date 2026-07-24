@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 )
 
 type Client struct {
@@ -81,25 +83,64 @@ func (r *Response) Text() string {
 	return out
 }
 
+// httpClient times out when the API stops responding.
+// ResponseHeaderTimeout is used instead of Client.Timeout so a long streaming body read is not killed mid-response.
+// 60s covers slow proxy queueing; a stuck request surfaces as a timeout error instead of hanging forever.
+var httpClient = &http.Client{
+	Transport: &http.Transport{ResponseHeaderTimeout: 60 * time.Second},
+}
+
+// maxBackoff caps the retry wait; doubling from 1s hits the 60s ceiling on the 7th retry.
+const maxBackoff = 60 * time.Second
+
+// retryLimit is how many failed attempts to retry before giving up.
+// 7 walks the full 1s..60s backoff ladder once.
+const retryLimit = 7
+
+// send posts the request, retrying timeouts, network errors, 429, and 5xx with exponential backoff.
+// The last failure reason (including API timeouts) is returned so the user sees why the request gave up.
 func (c *Client) send(body request) (*http.Response, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/v1/messages", bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
+	// A trailing slash in BaseURL would build "//v1/messages", which FastAPI proxies 404.
+	url := strings.TrimRight(c.BaseURL, "/") + "/v1/messages"
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+	backoff := time.Second
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", c.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+
+		resp, err := httpClient.Do(req)
+		if err == nil && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+			return resp, nil
+		}
+
+		var reason string
+		if err != nil {
+			// Timeouts land here; err.Error() names them (e.g. "timeout awaiting response headers").
+			reason = err.Error()
+		} else {
+			reason = "status " + resp.Status
+			resp.Body.Close()
+		}
+		if attempt == retryLimit {
+			return nil, fmt.Errorf("send request: giving up after %d retries: %s", retryLimit, reason)
+		}
+
+		fmt.Fprintf(os.Stderr, "api request failed (%s); retrying in %s\n", reason, backoff)
+		time.Sleep(backoff)
+		if backoff < maxBackoff {
+			backoff *= 2
+		}
 	}
-	return resp, nil
 }
 
 // Complete sends the message history and returns the model's response.
