@@ -36,6 +36,10 @@ Import direction is one-way: `ui` imports `agent`; `agent` imports `llm` and `to
 Tool calls exec the matching script in `tools/` so tool behavior can change while an agent is running.
 Directories are created when code lands in them, not before.
 
+On startup the agent symlinks every tool script into a private per-instance directory
+(`$XDG_RUNTIME_DIR/agent-<pid>/tools`) and loads its tool registry from there, so different
+agent instances can run with different tool sets. The directory is removed on exit.
+
 ## Tool Contract
 
 Every script in `tools/` must follow this contract (see `tools/read_file` for the reference implementation):
