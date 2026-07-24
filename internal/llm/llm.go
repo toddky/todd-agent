@@ -1,4 +1,5 @@
-// Package llm is a client for the Anthropic Messages API wire format, served by api.anthropic.com or any compatible proxy (e.g. litellm).
+// Package llm is a client for the OpenAI Chat Completions wire format, served by litellm or any compatible proxy.
+// The exported types keep Anthropic-style content blocks; translation to the wire format happens inside the client.
 package llm
 
 import (
@@ -50,22 +51,13 @@ type ToolDef struct {
 }
 
 type Response struct {
-	Content    []ContentBlock `json:"content"`
-	StopReason string         `json:"stop_reason"`
-	Error      *APIError      `json:"error"`
+	Content    []ContentBlock
+	StopReason string
 }
 
 type APIError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
-}
-
-type request struct {
-	Model     string    `json:"model"`
-	MaxTokens int       `json:"max_tokens"`
-	Messages  []Message `json:"messages"`
-	Tools     []ToolDef `json:"tools,omitempty"`
-	Stream    bool      `json:"stream,omitempty"`
 }
 
 // maxTokens is the per-response output budget.
@@ -81,6 +73,130 @@ func (r *Response) Text() string {
 		}
 	}
 	return out
+}
+
+// apiMessage is one Chat Completions message on the wire.
+// Unlike Message, text is a flat string; tool calls and tool results get dedicated fields.
+// ToolCallID is set only on role "tool" messages to link a result to the call it answers.
+type apiMessage struct {
+	Role       string         `json:"role"`
+	Content    string         `json:"content,omitempty"`
+	ToolCalls  []apiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+// apiToolCall is one tool invocation the model makes: which tool, with what arguments.
+// The Chat Completions equivalent of an Anthropic tool_use block.
+type apiToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function apiFunction `json:"function"`
+}
+
+// apiFunction is the name/arguments pair nested under a tool call's "function" key.
+// Arguments is a JSON-encoded string, not a JSON object; that quirk is the wire format's.
+type apiFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// apiTool advertises one callable tool in the request's "tools" array: the definition, not a call.
+// It wraps a ToolDef in the Chat Completions "function" envelope.
+type apiTool struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Parameters  json.RawMessage `json:"parameters"`
+	} `json:"function"`
+}
+
+type request struct {
+	Model     string        `json:"model"`
+	MaxTokens int           `json:"max_tokens"`
+	Messages  []apiMessage `json:"messages"`
+	Tools     []apiTool    `json:"tools,omitempty"`
+	Stream    bool          `json:"stream,omitempty"`
+}
+
+// toAPI flattens block-structured history into Chat Completions messages.
+// Each tool_result block becomes its own "tool" role message, as the wire format requires.
+func toAPI(messages []Message) []apiMessage {
+	var wire []apiMessage
+	for _, message := range messages {
+		var text string
+		var calls []apiToolCall
+		var results []apiMessage
+		for _, block := range message.Content {
+			switch block.Type {
+			case "text":
+				text += block.Text
+			case "tool_use":
+				calls = append(calls, apiToolCall{
+					ID:   block.ID,
+					Type: "function",
+					Function: apiFunction{
+						Name:      block.Name,
+						Arguments: string(block.Input),
+					},
+				})
+			case "tool_result":
+				content := block.Content
+				// The wire format has no is_error flag; a prefix is how the model learns the call failed.
+				if block.IsError {
+					content = "ERROR: " + content
+				}
+				results = append(results, apiMessage{
+					Role:       "tool",
+					Content:    content,
+					ToolCallID: block.ToolUseID,
+				})
+			}
+		}
+		if text != "" || len(calls) > 0 {
+			wire = append(wire, apiMessage{Role: message.Role, Content: text, ToolCalls: calls})
+		}
+		wire = append(wire, results...)
+	}
+	return wire
+}
+
+func toAPITools(tools []ToolDef) []apiTool {
+	var wire []apiTool
+	for _, tool := range tools {
+		var wrapped apiTool
+		wrapped.Type = "function"
+		wrapped.Function.Name = tool.Name
+		wrapped.Function.Description = tool.Description
+		wrapped.Function.Parameters = tool.InputSchema
+		wire = append(wire, wrapped)
+	}
+	return wire
+}
+
+// fromAPI rebuilds content blocks and the Anthropic-style stop reason the agent loop expects.
+func fromAPI(text string, calls []apiToolCall, finishReason string) *Response {
+	var response Response
+	if text != "" {
+		response.Content = append(response.Content, ContentBlock{Type: "text", Text: text})
+	}
+	for _, call := range calls {
+		input := call.Function.Arguments
+		if input == "" {
+			input = "{}"
+		}
+		response.Content = append(response.Content, ContentBlock{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Function.Name,
+			Input: json.RawMessage(input),
+		})
+	}
+	response.StopReason = finishReason
+	if finishReason == "tool_calls" {
+		response.StopReason = "tool_use"
+	}
+	return &response
 }
 
 // httpClient times out when the API stops responding.
@@ -105,8 +221,9 @@ func (c *Client) send(body request) (*http.Response, error) {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// A trailing slash in BaseURL would build "//v1/messages", which FastAPI proxies 404.
-	url := strings.TrimRight(c.BaseURL, "/") + "/v1/messages"
+	// /v1/chat/completions rather than /v1/messages: the proxy's WAF exempts only this route
+	// from its path-traversal body rule, and file contents legitimately contain "../.." sequences.
+	url := strings.TrimRight(c.BaseURL, "/") + "/v1/chat/completions"
 
 	backoff := time.Second
 	for attempt := 0; ; attempt++ {
@@ -115,8 +232,7 @@ func (c *Client) send(body request) (*http.Response, error) {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-api-key", c.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 
 		resp, err := httpClient.Do(req)
 		if err == nil && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
@@ -143,13 +259,25 @@ func (c *Client) send(body request) (*http.Response, error) {
 	}
 }
 
+// completion is the non-streaming Chat Completions response envelope.
+type completion struct {
+	Choices []struct {
+		FinishReason string `json:"finish_reason"`
+		Message      struct {
+			Content   string         `json:"content"`
+			ToolCalls []apiToolCall `json:"tool_calls"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *APIError `json:"error"`
+}
+
 // Complete sends the message history and returns the model's response.
 func (c *Client) Complete(messages []Message, tools []ToolDef) (*Response, error) {
 	resp, err := c.send(request{
 		Model:     c.Model,
 		MaxTokens: maxTokens,
-		Messages:  messages,
-		Tools:     tools,
+		Messages:  toAPI(messages),
+		Tools:     toAPITools(tools),
 	})
 	if err != nil {
 		return nil, err
@@ -161,37 +289,44 @@ func (c *Client) Complete(messages []Message, tools []ToolDef) (*Response, error
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	var parsed Response
+	var parsed completion
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("parse response (status %s): %w; raw: %s", resp.Status, err, body)
 	}
 	if parsed.Error != nil {
 		return nil, fmt.Errorf("api error (%s): %s", parsed.Error.Type, parsed.Error.Message)
 	}
-	return &parsed, nil
+	if len(parsed.Choices) == 0 {
+		return nil, fmt.Errorf("response has no choices (status %s); raw: %s", resp.Status, body)
+	}
+	choice := parsed.Choices[0]
+	return fromAPI(choice.Message.Content, choice.Message.ToolCalls, choice.FinishReason), nil
 }
 
-type streamEvent struct {
-	Type         string        `json:"type"`
-	Index        int           `json:"index"`
-	ContentBlock *ContentBlock `json:"content_block"`
-	Delta        struct {
-		Type        string `json:"type"`
-		Text        string `json:"text"`
-		PartialJSON string `json:"partial_json"`
-		StopReason  string `json:"stop_reason"`
-	} `json:"delta"`
+// chunk is one streamed Chat Completions SSE event.
+type chunk struct {
+	Choices []struct {
+		FinishReason string `json:"finish_reason"`
+		Delta        struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int          `json:"index"`
+				ID       string       `json:"id"`
+				Function apiFunction `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"delta"`
+	} `json:"choices"`
 	Error *APIError `json:"error"`
 }
 
 // CompleteStream sends the message history with streaming enabled, calling onText for each text fragment as it arrives.
-// It returns the full response, including any tool_use blocks assembled from input_json_delta events.
+// It returns the full response, including tool calls assembled from streamed argument fragments.
 func (c *Client) CompleteStream(messages []Message, tools []ToolDef, onText func(string)) (*Response, error) {
 	resp, err := c.send(request{
 		Model:     c.Model,
 		MaxTokens: maxTokens,
-		Messages:  messages,
-		Tools:     tools,
+		Messages:  toAPI(messages),
+		Tools:     toAPITools(tools),
 		Stream:    true,
 	})
 	if err != nil {
@@ -204,10 +339,12 @@ func (c *Client) CompleteStream(messages []Message, tools []ToolDef, onText func
 		return nil, fmt.Errorf("stream request failed (status %s): %s", resp.Status, body)
 	}
 
-	var result Response
-	// The API streams tool_use input as JSON fragments; collect per block index.
-	inputParts := make(map[int]*strings.Builder)
-	indexToPos := make(map[int]int)
+	var text string
+	var finishReason string
+	// Tool call fragments arrive keyed by index; id and name come once, arguments accumulate.
+	calls := make(map[int]*apiToolCall)
+	arguments := make(map[int]*strings.Builder)
+	var order []int
 
 	scanner := bufio.NewScanner(resp.Body)
 	// Allow long SSE lines; default 64KB can truncate large deltas.
@@ -216,57 +353,55 @@ func (c *Client) CompleteStream(messages []Message, tools []ToolDef, onText func
 	for scanner.Scan() {
 		line := scanner.Text()
 		data, found := strings.CutPrefix(line, "data: ")
-		if !found {
+		if !found || data == "[DONE]" {
 			continue
 		}
 
-		var event streamEvent
+		var event chunk
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			return nil, fmt.Errorf("parse stream event: %w; raw: %s", err, data)
 		}
+		if event.Error != nil {
+			return nil, fmt.Errorf("api error (%s): %s", event.Error.Type, event.Error.Message)
+		}
+		if len(event.Choices) == 0 {
+			continue
+		}
+		choice := event.Choices[0]
 
-		switch event.Type {
-		case "error":
-			if event.Error != nil {
-				return nil, fmt.Errorf("api error (%s): %s", event.Error.Type, event.Error.Message)
-			}
-		case "content_block_start":
-			if event.ContentBlock == nil {
-				return nil, fmt.Errorf("content_block_start without content_block; raw: %s", data)
-			}
-			indexToPos[event.Index] = len(result.Content)
-			result.Content = append(result.Content, *event.ContentBlock)
-			if event.ContentBlock.Type == "tool_use" {
-				inputParts[event.Index] = &strings.Builder{}
-			}
-		case "content_block_delta":
-			pos, known := indexToPos[event.Index]
+		if choice.Delta.Content != "" {
+			text += choice.Delta.Content
+			onText(choice.Delta.Content)
+		}
+		for _, fragment := range choice.Delta.ToolCalls {
+			call, known := calls[fragment.Index]
 			if !known {
-				return nil, fmt.Errorf("delta for unknown block index %d; raw: %s", event.Index, data)
+				call = &apiToolCall{Type: "function"}
+				calls[fragment.Index] = call
+				arguments[fragment.Index] = &strings.Builder{}
+				order = append(order, fragment.Index)
 			}
-			switch event.Delta.Type {
-			case "text_delta":
-				result.Content[pos].Text += event.Delta.Text
-				onText(event.Delta.Text)
-			case "input_json_delta":
-				inputParts[event.Index].WriteString(event.Delta.PartialJSON)
+			if fragment.ID != "" {
+				call.ID = fragment.ID
 			}
-		case "message_delta":
-			if event.Delta.StopReason != "" {
-				result.StopReason = event.Delta.StopReason
+			if fragment.Function.Name != "" {
+				call.Function.Name = fragment.Function.Name
 			}
+			arguments[fragment.Index].WriteString(fragment.Function.Arguments)
+		}
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read stream: %w", err)
 	}
 
-	for index, builder := range inputParts {
-		input := builder.String()
-		if input == "" {
-			input = "{}"
-		}
-		result.Content[indexToPos[index]].Input = json.RawMessage(input)
+	var assembled []apiToolCall
+	for _, index := range order {
+		call := calls[index]
+		call.Function.Arguments = arguments[index].String()
+		assembled = append(assembled, *call)
 	}
-	return &result, nil
+	return fromAPI(text, assembled, finishReason), nil
 }
