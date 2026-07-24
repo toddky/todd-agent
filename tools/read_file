@@ -32,15 +32,29 @@ if [[ -z "$input_file" ]]; then
 	exit 2
 fi
 
-if [[ ! -f "$input_file" ]]; then
+# Expand ~ and $VARs with Python's expanduser/expandvars; the path never reaches a shell reparse, so $(...) stays inert.
+# Error messages below print the original path, never the expanded one, so secret env values (e.g. $ANTHROPIC_API_KEY) cannot leak into output.
+expanded_file="$input_file"
+if command -v python3 > /dev/null 2>&1; then
+	expanded_file="$(printf '%s' "$input_file" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+else
+	echo "read_file: warning: python3 is not installed; using the path without expanding ~ and \$VARs" 1>&2
+fi
+
+if [[ ! -f "$expanded_file" ]]; then
 	echo "read_file: file not found: $input_file" 1>&2
-	parent_dir="$(dirname -- "$input_file")"
-	base_name="$(basename -- "$input_file")"
+	parent_dir="$(dirname -- "$expanded_file")"
+	base_name="$(basename -- "$expanded_file")"
+	# Match on the name without its extension; dotfiles like .bashrc would strip to "" and match everything, so keep the full name for them.
+	stem="${base_name%.*}"
+	if [[ -z "$stem" ]]; then
+		stem="$base_name"
+	fi
 	# Suggest near-miss names so the model can correct a typo'd path; -i catches case mistakes.
 	# git ls-files is index-only (fast on large repos), ':/' prints repo-root-relative paths, 10 keeps the list short.
-	similar_files="$(git ls-files --full-name ':/' 2>/dev/null | grep -iF "${base_name%.*}" | head -10)"
+	similar_files="$(git ls-files --full-name ':/' 2>/dev/null | grep -iF "$stem" | head -10)"
 	if [[ -z "$similar_files" && -d "$parent_dir" ]]; then
-		similar_files="$(find "$parent_dir" -maxdepth 1 -type f -iname "*${base_name%.*}*" -print 2>/dev/null | head -10)"
+		similar_files="$(find "$parent_dir" -maxdepth 1 -type f -iname "*${stem}*" -print 2>/dev/null | head -10)"
 	fi
 	if [[ -n "$similar_files" ]]; then
 		cat 1>&2 <<EOF
@@ -51,7 +65,7 @@ EOF
 	exit 1
 fi
 
-if ! cat -- "$input_file"; then
+if ! cat -- "$expanded_file"; then
 	echo "read_file: failed to read: $input_file" 1>&2
 	exit 1
 fi
