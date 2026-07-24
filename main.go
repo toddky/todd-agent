@@ -13,19 +13,28 @@ import (
 	"github.com/toddky/todd-agent/internal/ui/repl"
 )
 
+// Exit codes:
+//
+//	0 = success (in --oneshot: verdict pass)
+//	1 = verdict fail (--oneshot only)
+//	2 = the model never called the verdict tool (--oneshot only)
+//	3 = runtime error (bad flags, missing key, tool discovery or API failure)
+//
+// run returns the code instead of calling os.Exit so its deferred cleanup still runs.
 func main() {
-	if err := run(); err != nil {
+	code, err := run()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
 	}
+	os.Exit(code)
 }
 
-func run() error {
+func run() (int, error) {
 	prompt := flag.String("prompt", "", "first prompt to send; in REPL mode it runs before reading input")
 	oneshotMode := flag.Bool("oneshot", false, "answer --prompt in a single turn and exit (requires --prompt)")
 	flag.Parse()
 	if *oneshotMode && *prompt == "" {
-		return fmt.Errorf("--oneshot requires --prompt; pass the question with --prompt '...'")
+		return 3, fmt.Errorf("--oneshot requires --prompt; pass the question with --prompt '...'")
 	}
 
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -33,7 +42,7 @@ func run() error {
 		apiKey = os.Getenv("ANTHROPIC_AUTH_TOKEN")
 	}
 	if apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) must be set")
+		return 3, fmt.Errorf("ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) must be set")
 	}
 
 	// Trim trailing slashes so path joins in the client can't build "//v1/..." URLs.
@@ -49,7 +58,7 @@ func run() error {
 
 	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("locate executable to find tools dir: %w", err)
+		return 3, fmt.Errorf("locate executable to find tools dir: %w", err)
 	}
 	sourceTools := filepath.Join(filepath.Dir(executable), "tools")
 	if _, err := os.Stat(sourceTools); err != nil {
@@ -60,7 +69,7 @@ func run() error {
 	// Every executable in the tools dir is allowed.
 	// Per-agent restriction happens by pointing different agents at different source dirs later.
 	if err := agent.Setup(sourceTools); err != nil {
-		return err
+		return 3, err
 	}
 	defer func() {
 		if err := agent.Cleanup(); err != nil {
@@ -70,15 +79,22 @@ func run() error {
 
 	registry, err := agent.LoadAll(filepath.Join(agent.GetRuntimeDir(), "tools"))
 	if err != nil {
-		return err
+		return 3, err
 	}
 
 	engine := &agent.Agent{
 		Client: &llm.Client{APIKey: apiKey, BaseURL: baseURL, Model: model},
 		Tools:  registry,
 	}
+	// TODO: oneshot.Run will return a verdict-based code (0/1/2) once the verdict tool lands.
 	if *oneshotMode {
-		return oneshot.Run(engine, *prompt)
+		if err := oneshot.Run(engine, *prompt); err != nil {
+			return 3, err
+		}
+		return 0, nil
 	}
-	return repl.Run(engine, *prompt)
+	if err := repl.Run(engine, *prompt); err != nil {
+		return 3, err
+	}
+	return 0, nil
 }
