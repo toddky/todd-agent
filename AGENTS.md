@@ -26,7 +26,7 @@ todd-agent/
 │       │   └── repl.go  # plain line REPL frontend
 │       └── tui/         # full-screen TUI frontend (later)
 ├── tools/               # executable tool scripts, any language (see Tool Contract)
-│   ├── read             # read a file's contents
+│   ├── read_file        # read a file's contents
 │   └── ...
 └── docs/
     └── examples/        # reference notes on how other coding agents define tools and hooks
@@ -46,6 +46,9 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 - A normal call receives JSON arguments on stdin and writes its result text to stdout.
 - Failure reasons go to stderr, never stdout.
 - Exit codes: `0` = success, `1` = runtime failure (e.g. file not found), `2` = malformed call (bad or missing arguments).
+- The agent enforces the timeout around the exec (`timeout_secs`, default 10s); tools never time themselves out.
+- Never pass tool input to a shell reparse (`eval`, `bash -c`); expand paths with facilities that treat the input as data.
+- Error messages echo the original input (e.g. the unexpanded path), never expanded values, so secret env vars cannot leak into model-visible output.
 
 ## Naming and API Style
 
@@ -56,6 +59,7 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 - Name enum-ish fields `Type`, matching the wire format's naming (`ContentBlock.Type`, `Event.Type`), not `Kind`.
 - Inside a package, name the one-item helper after the verb and the collection loader `<Verb>All` (e.g. `load` and `LoadAll`).
 - Never use the word `emit` (or any inflection) in identifiers, comments, or commit messages. Use `notify`, `publish`, `write`, or `print` instead.
+- Comments are one sentence per line, max 2 lines. Explain arbitrary numbers (timeouts, sizes, caps): say where the value came from, or that it is a guess.
 
 ## Operational Rules
 
