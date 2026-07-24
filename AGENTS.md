@@ -40,6 +40,17 @@ On startup the agent symlinks every tool script into a private per-instance dire
 (`$XDG_RUNTIME_DIR/agent-<pid>/tools`) and loads its tool registry from there, so different
 agent instances can run with different tool sets. The directory is removed on exit.
 
+## Agent Exit Codes
+
+The `todd-agent` process itself exits with:
+
+- `0` = success (in `--oneshot`: verdict pass).
+- `1` = verdict fail (`--oneshot` only; requires the verdict tool, not yet implemented).
+- `2` = the model never called the verdict tool (`--oneshot` only; not yet implemented).
+- `3` = runtime error: bad flags, missing API key, tool discovery failure, or API failure.
+
+These are distinct from the tool script exit codes below: tool codes go to the model, agent codes go to the calling shell.
+
 ## Tool Contract
 
 Every script in `tools/` must follow this contract (see `tools/read_file` for the reference implementation):
