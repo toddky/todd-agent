@@ -112,7 +112,8 @@ func printEvent(event agent.Event) {
 }
 
 // Run reads prompts from stdin and runs agent turns until Ctrl-C/Ctrl-D.
-func Run(engine *agent.Agent) error {
+// A non-empty firstPrompt runs as the first turn before stdin is read.
+func Run(engine *agent.Agent, firstPrompt string) error {
 	var messages []llm.Message
 
 	stat, _ := os.Stdin.Stat()
@@ -125,7 +126,9 @@ func Run(engine *agent.Agent) error {
 	for {
 		var prompt string
 		var err error
-		if interactive {
+		if firstPrompt != "" {
+			prompt, firstPrompt = firstPrompt, ""
+		} else if interactive {
 			prompt, err = readPrompt()
 		} else {
 			prompt, err = readPromptPlain(scanner)
