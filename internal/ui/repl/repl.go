@@ -1,8 +1,7 @@
 // Package repl is a plain line-based chat frontend.
 //
-// Responses are printed exactly as the model produced them. Never add
-// artificial line wrapping: it makes copy/paste a pain and ruins terminal
-// resizing.
+// Responses are printed exactly as the model produced them.
+// Never add artificial line wrapping: it makes copy/paste a pain and ruins terminal resizing.
 package repl
 
 import (
@@ -13,12 +12,15 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/toddky/todd-agent/internal/agent"
 	"github.com/toddky/todd-agent/internal/llm"
 )
 
 const (
 	reset = "\033[0m"
 	green = "\033[38;5;46m"
+	gray  = "\033[38;5;245m"
+	red   = "\033[38;5;196m"
 )
 
 type inputModel struct {
@@ -92,8 +94,25 @@ func readPromptPlain(scanner *bufio.Scanner) (string, error) {
 
 var errQuit = errors.New("quit")
 
-// Run reads prompts from stdin and prints model responses until Ctrl-C/Ctrl-D.
-func Run(client *llm.Client) error {
+// printEvent prints one engine event.
+// Tool activity is gray so it reads as machinery, not model output.
+func printEvent(event agent.Event) {
+	switch event.Type {
+	case agent.EventTextDelta:
+		fmt.Print(event.Text)
+	case agent.EventToolCallStarted:
+		fmt.Printf("\n%s🔧 %s %s%s\n", gray, event.ToolName, event.ToolInput, reset)
+	case agent.EventToolResult:
+		if event.IsError {
+			fmt.Printf("%s✗ %s%s\n", red, event.Result, reset)
+		}
+	case agent.EventError:
+		fmt.Fprintf(os.Stderr, "%s%v%s\n", red, event.Err, reset)
+	}
+}
+
+// Run reads prompts from stdin and runs agent turns until Ctrl-C/Ctrl-D.
+func Run(engine *agent.Agent) error {
 	var messages []llm.Message
 
 	stat, _ := os.Stdin.Stat()
@@ -124,19 +143,14 @@ func Run(client *llm.Client) error {
 		// Echo the submitted prompt in green, like ,agent2.
 		fmt.Printf("👤%s %s%s\n", green, prompt, reset)
 
-		messages = append(messages, llm.Message{Role: "user", Content: prompt})
-
-		text, err := client.CompleteStream(messages, func(fragment string) {
-			fmt.Print(fragment)
-		})
+		history := append(messages, llm.TextMessage("user", prompt))
+		updated, err := engine.Turn(history, printEvent)
 		if err != nil {
 			// Drop the failed turn so a transient API error doesn't poison the history.
-			messages = messages[:len(messages)-1]
-			fmt.Fprintln(os.Stderr, err)
 			continue
 		}
 
 		fmt.Println()
-		messages = append(messages, llm.Message{Role: "assistant", Content: text})
+		messages = updated
 	}
 }
