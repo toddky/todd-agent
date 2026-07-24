@@ -55,6 +55,7 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 - Getter functions start with `Get` (e.g. `GetRuntimeDir`).
 - Name enum-ish fields `Type`, matching the wire format's naming (`ContentBlock.Type`, `Event.Type`), not `Kind`.
 - Inside a package, name the one-item helper after the verb and the collection loader `<Verb>All` (e.g. `load` and `LoadAll`).
+- Never use the word `emit` (or any inflection) in identifiers, comments, or commit messages. Use `notify`, `publish`, `write`, or `print` instead.
 
 ## Operational Rules
 
