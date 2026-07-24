@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Record your final pass/fail judgment for the user's question. Call this exactly once, after any needed investigation, when asked a yes/no or pass/fail question. Input: {\"pass\": <true|false>, \"reason\": \"<one-sentence justification>\"}.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "pass": {"type": "boolean", "description": "true if the answer is yes/pass, false if no/fail"},
+      "reason": {"type": "string", "description": "One-sentence justification for the verdict"}
+    },
+    "required": ["pass", "reason"]
+  },
+  "timeout_secs": 10
+}
+SCHEMA
+	exit 0
+fi
+
+# The frontend reads the verdict from the tool-call event, not from this output.
+# This script only validates the arguments so the model gets a clear error on a bad call.
+if ! parsed="$(jq -r '"\(.pass) \(.reason)"' 2>&1)"; then
+	echo "verdict: input is not valid JSON: $parsed" 1>&2
+	exit 2
+fi
+pass_value="${parsed%% *}"
+if [[ "$pass_value" != "true" && "$pass_value" != "false" ]]; then
+	echo "verdict: \"pass\" must be true or false; expected {\"pass\": <bool>, \"reason\": \"<text>\"}" 1>&2
+	exit 2
+fi
+reason_value="${parsed#* }"
+if [[ -z "$reason_value" || "$reason_value" == "null" ]]; then
+	echo "verdict: missing required \"reason\" in JSON input; expected {\"pass\": <bool>, \"reason\": \"<text>\"}" 1>&2
+	exit 2
+fi
+
+echo "verdict recorded: pass=$pass_value"
