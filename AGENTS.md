@@ -56,7 +56,9 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 
 ## Dependencies
 
-- External dependencies: `jq` (tool scripts parse their JSON input with it) and optionally `python3` (path expansion in `read_file`). Go dependencies are limited to the bubbletea/bubbles TUI libraries.
+- External dependencies: `jq` (tool scripts parse their JSON input with it) and optionally `python3` (path expansion in `read_file`).
+- The only external Go libraries are `github.com/charmbracelet/bubbletea` and `github.com/charmbracelet/bubbles`, used for the REPL's text input.
+- Do not add any external library without permission from the user.
 - Never use an external SDK for AI or LLM APIs. The `internal/llm` package speaks the wire format directly with `net/http`.
 
 ## Naming and API Style
