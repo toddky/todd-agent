@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/toddky/todd-agent/internal/agent"
 	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/todd-agent/internal/ui/oneshot"
 	"github.com/toddky/todd-agent/internal/ui/repl"
 )
 
@@ -19,6 +21,13 @@ func main() {
 }
 
 func run() error {
+	prompt := flag.String("prompt", "", "first prompt to send; in REPL mode it runs before reading input")
+	oneshotMode := flag.Bool("oneshot", false, "answer --prompt in a single turn and exit (requires --prompt)")
+	flag.Parse()
+	if *oneshotMode && *prompt == "" {
+		return fmt.Errorf("--oneshot requires --prompt; pass the question with --prompt '...'")
+	}
+
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		apiKey = os.Getenv("ANTHROPIC_AUTH_TOKEN")
@@ -68,5 +77,8 @@ func run() error {
 		Client: &llm.Client{APIKey: apiKey, BaseURL: baseURL, Model: model},
 		Tools:  registry,
 	}
-	return repl.Run(engine)
+	if *oneshotMode {
+		return oneshot.Run(engine, *prompt)
+	}
+	return repl.Run(engine, *prompt)
 }
