@@ -5,6 +5,7 @@
 package oneshot
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -34,14 +35,22 @@ func printEvent(event agent.Event) {
 	}
 }
 
-// Run drives a single turn to completion and returns the turn's error.
+// Run drives a single turn to completion and returns the exit code for main.
 // A turn may span many model/tool round-trips; it ends when the model stops requesting tools.
-func Run(engine *agent.Agent, prompt string) error {
+// If the model calls the exit tool, the reason prints to stdout and its code becomes the exit code.
+func Run(engine *agent.Agent, prompt string) (int, error) {
 	messages := []llm.Message{llm.TextMessage("user", prompt)}
 	_, err := engine.Turn(messages, printEvent)
+
+	var exitRequest *agent.ExitRequest
+	if errors.As(err, &exitRequest) {
+		fmt.Println(exitRequest.Reason)
+		return exitRequest.Code, nil
+	}
 	if err != nil {
-		return err
+		// 3 = runtime error, distinct from any model-chosen exit code (see main.go).
+		return 3, err
 	}
 	fmt.Println()
-	return nil
+	return 0, nil
 }
