@@ -44,10 +44,16 @@ agent instances can run with different tool sets. The directory is removed on ex
 
 The `todd-agent` process itself exits with:
 
-- `0` = success (in `--oneshot`: verdict pass).
-- `1` = verdict fail (`--oneshot` only; requires the verdict tool, not yet implemented).
-- `2` = the model never called the verdict tool (`--oneshot` only; not yet implemented).
+- `0` = success.
 - `3` = runtime error: bad flags, missing API key, tool discovery failure, or API failure.
+- Any other code = the model called the internal `exit` tool (see `--allow-exit`).
+
+Passing `--allow-exit` advertises an internal `exit` tool (`{code, reason}`) to the model.
+The model chooses the exit code itself; the agent uses it verbatim, so scripts can branch on model decisions.
+When called, the agent stops the turn at once, prints the reason, runs cleanup, and exits with that code.
+The schema documents 0-125 but nothing enforces the range: exit codes are 8-bit, so out-of-range values are truncated by the OS (e.g. 300 becomes 44), and a model picking 3 is indistinguishable from a runtime error.
+The engine dispatches `exit` itself; it is never exec'd from the tools dir.
+Without the flag the tool is not advertised, so the model cannot end the process.
 
 These are distinct from the tool script exit codes below: tool codes go to the model, agent codes go to the calling shell.
 
