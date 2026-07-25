@@ -32,6 +32,7 @@ func main() {
 func run() (int, error) {
 	prompt := flag.String("prompt", "", "first prompt to send; in REPL mode it runs before reading input")
 	oneshotMode := flag.Bool("oneshot", false, "answer --prompt in a single turn and exit (requires --prompt)")
+	allowExit := flag.Bool("allow-exit", false, "advertise an internal exit tool so the model can end the agent with any exit code")
 	flag.Parse()
 	if *oneshotMode && *prompt == "" {
 		return 3, fmt.Errorf("--oneshot requires --prompt; pass the question with --prompt '...'")
@@ -83,15 +84,12 @@ func run() (int, error) {
 	}
 
 	engine := &agent.Agent{
-		Client: &llm.Client{APIKey: apiKey, BaseURL: baseURL, Model: model},
-		Tools:  registry,
+		Client:    &llm.Client{APIKey: apiKey, BaseURL: baseURL, Model: model},
+		Tools:     registry,
+		AllowExit: *allowExit,
 	}
-	// TODO: oneshot.Run will return a verdict-based code (0/1/2) once the verdict tool lands.
 	if *oneshotMode {
-		if err := oneshot.Run(engine, *prompt); err != nil {
-			return 3, err
-		}
-		return 0, nil
+		return oneshot.Run(engine, *prompt)
 	}
 	if err := repl.Run(engine, *prompt); err != nil {
 		return 3, err
