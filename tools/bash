@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Run a bash command and return its output. Input: {\"command\": \"<shell command>\"}. Long jobs should be backgrounded (nohup ... & plus polling a log file with later calls) so they do not hit the timeout.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "command": {"type": "string", "description": "The bash command to run"}
+    },
+    "required": ["command"]
+  },
+  "timeout_secs": 120
+}
+SCHEMA
+	exit 0
+fi
+
+if ! command_text="$(jq -r '.command // empty' 2>&1)"; then
+	echo "bash: input is not valid JSON: $command_text" 1>&2
+	exit 2
+fi
+if [[ -z "$command_text" ]]; then
+	echo "bash: missing required \"command\" in JSON input; expected {\"command\": \"<shell command>\"}" 1>&2
+	exit 2
+fi
+
+# The command is the payload, so passing it to bash -c is intended here, not an injection bug.
+# </dev/null so commands that read stdin fail fast instead of hanging until the agent's timeout.
+bash -c "$command_text" </dev/null
+command_status=$?
+if [[ $command_status -ne 0 ]]; then
+	echo "bash: command exited with status $command_status" 1>&2
+	exit 1
+fi
