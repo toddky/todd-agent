@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -91,7 +92,13 @@ func run() (int, error) {
 	if *oneshotMode {
 		return oneshot.Run(engine, *prompt)
 	}
-	if err := repl.Run(engine, *prompt); err != nil {
+	err = repl.Run(engine, *prompt)
+	var exitRequest *agent.ExitRequest
+	if errors.As(err, &exitRequest) {
+		// The model called the exit tool; the reason was printed by the REPL.
+		return exitRequest.Code, nil
+	}
+	if err != nil {
 		return 3, err
 	}
 	return 0, nil
