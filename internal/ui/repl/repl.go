@@ -148,6 +148,12 @@ func Run(engine *agent.Agent, firstPrompt string) error {
 
 		history := append(messages, llm.TextMessage("user", prompt))
 		updated, err := engine.Turn(history, printEvent)
+		var exitRequest *agent.ExitRequest
+		if errors.As(err, &exitRequest) {
+			// The model called the exit tool; end the session so main can exit with its code.
+			fmt.Println(exitRequest.Reason)
+			return exitRequest
+		}
 		if err != nil {
 			// Drop the failed turn so a transient API error doesn't poison the history.
 			continue
