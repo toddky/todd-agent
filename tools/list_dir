@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "List directory contents, including dotfiles. Each line is '<type> <name>': f=file, d=directory, l=symlink. Input: {\"path\": \"<directory>\"}; path defaults to the current directory.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "Directory to list; defaults to the current directory"}
+    }
+  },
+  "timeout_secs": 10
+}
+SCHEMA
+	exit 0
+fi
+
+if ! input_path="$(jq -r '.path // "."' 2>&1)"; then
+	echo "list_dir: input is not valid JSON: $input_path" 1>&2
+	exit 2
+fi
+
+# Expand ~ and $VARs like read_file does; the path never reaches a shell reparse.
+expanded_path="$input_path"
+if command -v python3 > /dev/null 2>&1; then
+	expanded_path="$(printf '%s' "$input_path" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+else
+	echo "list_dir: warning: python3 is not installed; using the path without expanding ~ and \$VARs" 1>&2
+fi
+
+if [[ ! -d "$expanded_path" ]]; then
+	echo "list_dir: not a directory: $input_path" 1>&2
+	exit 1
+fi
+
+# Dotfiles are always listed: the consumer is a model, and hiding .gitignore/.github/etc would misrepresent the directory.
+# The -L test comes first: a symlink to a directory is both, and should print as l.
+shopt -s nullglob dotglob
+for entry in "$expanded_path"/*; do
+	name="$(basename -- "$entry")"
+	if [[ -L "$entry" ]]; then
+		entry_type="l"
+	elif [[ -d "$entry" ]]; then
+		entry_type="d"
+	else
+		entry_type="f"
+	fi
+	printf '%s %s\n' "$entry_type" "$name"
+done
