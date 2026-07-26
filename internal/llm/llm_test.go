@@ -83,6 +83,18 @@ func TestToAPI(t *testing.T) {
 			},
 		},
 		{
+			name: "empty tool result becomes a placeholder",
+			messages: []Message{{
+				Role: "user",
+				Content: []ContentBlock{
+					{Type: "tool_result", ToolUseID: "call_1", Content: ""},
+				},
+			}},
+			want: []apiMessage{
+				{Role: "tool", Content: "(no output)", ToolCallID: "call_1"},
+			},
+		},
+		{
 			name: "multiple tool results split into separate messages",
 			messages: []Message{{
 				Role: "user",
