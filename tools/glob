@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Find files by glob pattern, e.g. '*.go' or '**/*_test.go'. Input: {\"pattern\": \"<glob>\", \"path\": \"<search dir>\", \"depth\": <max levels>}; path defaults to the current directory, depth is unlimited when omitted. Uses ripgrep when available (skips hidden and .gitignore'd files); falls back to find (sees everything). The walk is cut off after 5 seconds and reports partial results. Output is capped at 200 paths.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "pattern": {"type": "string", "description": "Glob pattern to match file names or paths"},
+      "path": {"type": "string", "description": "Directory to search; defaults to the current directory"},
+      "depth": {"type": "integer", "description": "Max directory levels to descend; unlimited when omitted"}
+    },
+    "required": ["pattern"]
+  },
+  "timeout_secs": 10
+}
+SCHEMA
+	exit 0
+fi
+
+input_json="$(cat)"
+if ! pattern="$(jq -r '.pattern // ""' <<< "$input_json" 2>&1)"; then
+	echo "glob: input is not valid JSON: $pattern" 1>&2
+	exit 2
+fi
+search_path="$(jq -r '.path // "."' <<< "$input_json")"
+depth="$(jq -r '.depth // "" | tostring' <<< "$input_json")"
+if [[ -z "$pattern" ]]; then
+	echo "glob: missing required \"pattern\" in JSON input; expected {\"pattern\": \"<glob>\"}" 1>&2
+	exit 2
+fi
+if [[ -n "$depth" && ! "$depth" =~ ^[0-9]+$ ]]; then
+	echo "glob: \"depth\" must be a non-negative integer; got: $depth" 1>&2
+	exit 2
+fi
+
+# Expand ~ and $VARs like read_file does; the path never reaches a shell reparse.
+expanded_path="$search_path"
+if command -v python3 > /dev/null 2>&1; then
+	expanded_path="$(printf '%s' "$search_path" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+fi
+
+if [[ ! -d "$expanded_path" ]]; then
+	echo "glob: not a directory: $search_path" 1>&2
+	exit 1
+fi
+
+# 200 paths is plenty for a model to scan; more usually means the pattern needs narrowing.
+max_results=200
+# 5s walker cutoff: enough for local trees, short enough that a slow NFS mount returns partial results instead of hanging.
+walk_timeout=5
+
+walk_cmd=()
+if command -v rg > /dev/null 2>&1; then
+	# rg is the fast walker; it skips hidden files (including .git) and respects .gitignore by default.
+	walk_cmd=(rg --files --glob "$pattern")
+	if [[ -n "$depth" ]]; then
+		walk_cmd+=(--max-depth "$depth")
+	fi
+	walk_cmd+=(-- "$expanded_path")
+else
+	# Fallback walker sees everything, including .git and ignored files, unlike the rg tier.
+	walk_cmd=(find "$expanded_path")
+	if [[ -n "$depth" ]]; then
+		walk_cmd+=(-maxdepth "$depth")
+	fi
+	walk_cmd+=(-name "$pattern" -print)
+fi
+
+matches="$(timeout "$walk_timeout" "${walk_cmd[@]}" 2>/dev/null)"
+walk_status=$?
+
+# timeout(1) exits 124 when it had to kill the walker; whatever was printed so far is still usable.
+timed_out=""
+if [[ $walk_status -eq 124 ]]; then
+	timed_out="yes"
+fi
+
+if [[ -z "$matches" ]]; then
+	if [[ -n "$timed_out" ]]; then
+		echo "glob: walk timed out after ${walk_timeout}s with no matches; narrow the path or add a depth limit" 1>&2
+	else
+		echo "glob: no files match: $pattern" 1>&2
+	fi
+	exit 1
+fi
+
+total_count="$(wc -l <<< "$matches")"
+head -n "$max_results" <<< "$matches"
+if (( total_count > max_results )); then
+	echo "... truncated: showing $max_results of $total_count matches; narrow the pattern or path"
+fi
+if [[ -n "$timed_out" ]]; then
+	echo "... walk timed out after ${walk_timeout}s: results are partial; narrow the path or add a depth limit"
+fi
