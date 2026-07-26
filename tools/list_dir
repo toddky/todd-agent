@@ -18,8 +18,7 @@ if [[ "${1:-}" == "--schema" ]]; then
     "properties": {
       "path": {"type": "string", "description": "Directory to list; defaults to the current directory"}
     }
-  },
-  "timeout_secs": 10
+  }
 }
 SCHEMA
 	exit 0
@@ -29,8 +28,8 @@ fi
 # ==============================================================================
 # PARSE
 # ==============================================================================
-if ! input_path="$(jq -r '.path // "."' 2>&1)"; then
-	echo "list_dir: input is not valid JSON: $input_path" 1>&2
+if ! input_dir="$(jq -r '.path // "."' 2>&1)"; then
+	echo "list_dir: input is not valid JSON: $input_dir" 1>&2
 	exit 2
 fi
 
@@ -39,15 +38,15 @@ fi
 # MAIN
 # ==============================================================================
 # Expand ~ and $VARs like read_file does; the path never reaches a shell reparse.
-expanded_path="$input_path"
+expanded_dir="$input_dir"
 if command -v python3 > /dev/null 2>&1; then
-	expanded_path="$(printf '%s' "$input_path" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+	expanded_dir="$(printf '%s' "$input_dir" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
 else
 	echo "list_dir: warning: python3 is not installed; using the path without expanding ~ and \$VARs" 1>&2
 fi
 
-if [[ ! -d "$expanded_path" ]]; then
-	echo "list_dir: not a directory: $input_path" 1>&2
+if [[ ! -d "$expanded_dir" ]]; then
+	echo "list_dir: not a directory: $input_dir" 1>&2
 	exit 1
 fi
 
@@ -58,7 +57,7 @@ fi
 # Dotfiles are always listed: the consumer is a model, and hiding .gitignore/.github/etc would misrepresent the directory.
 # The -L test comes first: a symlink to a directory is both, and should print as l.
 shopt -s nullglob dotglob
-for entry in "$expanded_path"/*; do
+for entry in "$expanded_dir"/*; do
 	name="$(basename -- "$entry")"
 	if [[ -L "$entry" ]]; then
 		entry_type="l"
