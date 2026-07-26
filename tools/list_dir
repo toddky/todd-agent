@@ -54,7 +54,7 @@ fi
 # ==============================================================================
 # RESULTS
 # ==============================================================================
-# Dotfiles are always listed: the consumer is a model, and hiding .gitignore/.github/etc would misrepresent the directory.
+# Dotfiles are always listed so the model sees the true directory contents.
 # The -L test comes first: a symlink to a directory is both, and should print as l.
 shopt -s nullglob dotglob
 for entry in "$expanded_dir"/*; do
