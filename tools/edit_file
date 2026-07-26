@@ -13,7 +13,8 @@ import tempfile
 # ==============================================================================
 # VERSION
 # ==============================================================================
-# f-strings (used throughout) require 3.6; nothing here needs anything newer.
+# f-strings used throughout require 3.6.
+# Nothing here needs anything newer.
 if sys.version_info < (3, 6):
     sys.stderr.write("edit_file: requires Python 3.6 or newer\n")
     sys.exit(1)
@@ -115,8 +116,8 @@ for position, edit in enumerate(edits):
 # ==============================================================================
 # RESULTS
 # ==============================================================================
-# Write to a temp file in the same directory then atomically replace, so a crash mid-write
-# leaves the original intact instead of a truncated file. Same-dir keeps the replace on one filesystem.
+# Write to a temp file then atomically replace, so a crash mid-write leaves the original intact.
+# Same directory keeps the replace on one filesystem.
 original_mode = os.stat(expanded_path).st_mode
 target_dir = os.path.dirname(expanded_path) or "."
 try:
