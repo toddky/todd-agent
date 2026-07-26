@@ -20,13 +20,15 @@ todd-agent/
 │   │   ├── event.go     # event types: TextDelta, ToolCallStarted, ToolResult, TurnComplete, Error
 │   │   └── tool.go      # tool discovery + dispatch: execs scripts from tools/
 │   ├── llm/
-│   │   └── llm.go       # LLM API client (Anthropic Messages wire format, litellm-compatible)
+│   │   ├── llm.go       # LLM API client (OpenAI Chat Completions wire format, litellm-compatible)
+│   │   └── llm_test.go  # table-driven tests for the wire-format translators
 │   └── ui/              # frontends; consume engine events, never imported by the engine
 │       ├── repl/
 │       │   └── repl.go  # plain line REPL frontend
 │       └── tui/         # full-screen TUI frontend (later)
 ├── tools/               # executable tool scripts, any language (see Tool Contract)
 │   ├── read_file        # read a file's contents
+│   ├── bash             # run a shell command
 │   └── ...
 └── docs/
     └── examples/        # reference notes on how other coding agents define tools and hooks
@@ -69,6 +71,7 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 - Exit codes: `0` = success, `1` = runtime failure (e.g. file not found), `2` = malformed call (bad or missing arguments).
 - The agent enforces the timeout around the exec (`timeout_secs`, default 10s); tools never time themselves out.
 - Never pass tool input to a shell reparse (`eval`, `bash -c`); expand paths with facilities that treat the input as data.
+  Exception: `tools/bash`, where the command IS the payload and shell interpretation is the feature.
 - Error messages echo the original input (e.g. the unexpanded path), never expanded values, so secret env vars cannot leak into model-visible output.
 
 ## Dependencies
@@ -88,6 +91,12 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 - Inside a package, name the one-item helper after the verb and the collection loader `<Verb>All` (e.g. `load` and `LoadAll`).
 - Never use the word `emit` (or any inflection) in identifiers, comments, or commit messages. Use `notify`, `publish`, `write`, or `print` instead.
 - Comments are one sentence per line, max 2 lines. Explain arbitrary numbers (timeouts, sizes, caps): say where the value came from, or that it is a guess.
+
+## Testing
+
+- Tests are stdlib `testing` only, table-driven, in `foo_test.go` beside `foo.go`, same package so unexported functions are reachable.
+- Run everything with `go test ./...`; there is no separate test directory or framework.
+- Pure functions get tests first (e.g. the wire-format translators in `internal/llm`); exec- and network-dependent code needs fakes (tempdir tool scripts, `httptest`) and comes later.
 
 ## Operational Rules
 
