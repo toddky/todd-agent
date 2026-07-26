@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Create or overwrite a file with the given content, creating parent directories as needed. Input: {\"path\": \"<file>\", \"content\": \"<full file content>\"}.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "Path of the file to write"},
+      "content": {"type": "string", "description": "Full content to write; replaces any existing file"}
+    },
+    "required": ["path", "content"]
+  },
+  "timeout_secs": 10
+}
+SCHEMA
+	exit 0
+fi
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json="$(cat)"
+if ! input_path="$(jq -r '.path // ""' <<< "$input_json" 2>&1)"; then
+	echo "write_file: input is not valid JSON: $input_path" 1>&2
+	exit 2
+fi
+if [[ -z "$input_path" ]]; then
+	echo "write_file: missing required \"path\" in JSON input; expected {\"path\": \"<file>\", \"content\": \"...\"}" 1>&2
+	exit 2
+fi
+# Content may legitimately be an empty string, so test for presence and type rather than emptiness.
+if ! jq -e '.content | type == "string"' <<< "$input_json" > /dev/null 2>&1; then
+	echo "write_file: missing required string \"content\" in JSON input; expected {\"path\": \"<file>\", \"content\": \"...\"}" 1>&2
+	exit 2
+fi
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+# Expand ~ and $VARs like read_file does; the path never reaches a shell reparse.
+# Error messages echo the original path, never the expanded one, so secret env values cannot leak into output.
+expanded_path="$input_path"
+if command -v python3 > /dev/null 2>&1; then
+	expanded_path="$(printf '%s' "$input_path" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+fi
+
+if [[ -d "$expanded_path" ]]; then
+	echo "write_file: path is a directory: $input_path" 1>&2
+	exit 1
+fi
+
+parent_dir="$(dirname -- "$expanded_path")"
+if ! mkdir -p -- "$parent_dir" 2>/dev/null; then
+	echo "write_file: cannot create parent directory for: $input_path" 1>&2
+	exit 1
+fi
+
+# jq -j prints the raw string without the trailing newline jq -r would add.
+if ! jq -j '.content' <<< "$input_json" > "$expanded_path"; then
+	echo "write_file: failed to write: $input_path" 1>&2
+	exit 1
+fi
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+byte_count="$(wc -c < "$expanded_path")"
+echo "wrote $input_path ($byte_count bytes)"
