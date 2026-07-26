@@ -185,6 +185,8 @@ func (r *Registry) Run(name string, input json.RawMessage) (string, error) {
 	cmd.Stdin = bytes.NewReader(input)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// 1s after the timeout kill, Wait abandons the output pipes so a tool's hung child cannot stall the agent.
+	cmd.WaitDelay = time.Second
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("tool %s timed out after %s", name, tool.Timeout)
