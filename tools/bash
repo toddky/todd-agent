@@ -6,6 +6,9 @@
 #   1 = runtime failure
 #   2 = malformed call (bad arguments)
 
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
 if [[ "${1:-}" == "--schema" ]]; then
 	cat <<'SCHEMA'
 {
@@ -23,6 +26,10 @@ SCHEMA
 	exit 0
 fi
 
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
 if ! command_text="$(jq -r '.command // empty' 2>&1)"; then
 	echo "bash: input is not valid JSON: $command_text" 1>&2
 	exit 2
@@ -32,6 +39,10 @@ if [[ -z "$command_text" ]]; then
 	exit 2
 fi
 
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
 # The command is the payload, so passing it to bash -c is intended here, not an injection bug.
 # </dev/null so commands that read stdin fail fast instead of hanging until the agent's timeout.
 bash -c "$command_text" </dev/null
