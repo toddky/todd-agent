@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+import json
+import os
+import sys
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+SCHEMA = {
+    "description": (
+        'Edit a file with exact string replacements. '
+        'Input: {"path": "<file>", "edits": [{"old_text": "<exact text>", "new_text": "<replacement>"}]}. '
+        "Each old_text must match exactly one location in the file; edits apply in order. "
+        "Include enough surrounding lines in old_text to make the match unique."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path of the file to edit"},
+            "edits": {
+                "type": "array",
+                "description": "Replacements applied in order",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "old_text": {"type": "string", "description": "Exact text to replace; must match exactly once"},
+                        "new_text": {"type": "string", "description": "Replacement text"},
+                    },
+                    "required": ["old_text", "new_text"],
+                },
+                "minItems": 1,
+            },
+        },
+        "required": ["path", "edits"],
+    },
+    "timeout_secs": 10,
+}
+
+if len(sys.argv) > 1 and sys.argv[1] == "--schema":
+    print(json.dumps(SCHEMA, indent=2))
+    sys.exit(0)
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+def malformed(reason):
+    print(f"edit_file: {reason}", file=sys.stderr)
+    sys.exit(2)
+
+
+def failed(reason):
+    print(f"edit_file: {reason}", file=sys.stderr)
+    sys.exit(1)
+
+
+try:
+    call = json.load(sys.stdin)
+except json.JSONDecodeError as decode_error:
+    malformed(f"input is not valid JSON: {decode_error}")
+
+input_path = call.get("path")
+edits = call.get("edits")
+if not isinstance(input_path, str) or not input_path:
+    malformed('missing required "path" in JSON input; expected {"path": "<file>", "edits": [...]}')
+if not isinstance(edits, list) or not edits:
+    malformed('missing required "edits" in JSON input; expected a non-empty array of {"old_text", "new_text"}')
+for position, edit in enumerate(edits):
+    if not isinstance(edit, dict) or not isinstance(edit.get("old_text"), str) or not isinstance(edit.get("new_text"), str):
+        malformed(f'edits[{position}] must be an object with string "old_text" and "new_text"')
+    if edit["old_text"] == "":
+        malformed(f'edits[{position}].old_text must not be empty')
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+# Error messages echo the original path, never the expanded one, so secret env values cannot leak into output.
+expanded_path = os.path.expandvars(os.path.expanduser(input_path))
+if not os.path.isfile(expanded_path):
+    failed(f"file not found: {input_path}")
+
+try:
+    with open(expanded_path, encoding="utf-8") as edited_file:
+        content = edited_file.read()
+except (OSError, UnicodeDecodeError) as read_error:
+    failed(f"cannot read {input_path}: {read_error}")
+
+# Validate each edit against the content as it evolves, so ordered edits may build on earlier ones.
+for position, edit in enumerate(edits):
+    occurrences = content.count(edit["old_text"])
+    if occurrences == 0:
+        failed(f"edits[{position}].old_text not found in {input_path}; re-read the file and copy the text exactly")
+    if occurrences > 1:
+        failed(f"edits[{position}].old_text matches {occurrences} locations in {input_path}; add surrounding lines to make it unique")
+    content = content.replace(edit["old_text"], edit["new_text"], 1)
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+try:
+    with open(expanded_path, "w", encoding="utf-8") as edited_file:
+        edited_file.write(content)
+except OSError as write_error:
+    failed(f"cannot write {input_path}: {write_error}")
+
+print(f"edited {input_path}: {len(edits)} replacement(s)")
