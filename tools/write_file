@@ -20,8 +20,7 @@ if [[ "${1:-}" == "--schema" ]]; then
       "content": {"type": "string", "description": "Full content to write; replaces any existing file"}
     },
     "required": ["path", "content"]
-  },
-  "timeout_secs": 10
+  }
 }
 SCHEMA
 	exit 0
@@ -32,11 +31,11 @@ fi
 # PARSE
 # ==============================================================================
 input_json="$(cat)"
-if ! input_path="$(jq -r '.path // ""' <<< "$input_json" 2>&1)"; then
-	echo "write_file: input is not valid JSON: $input_path" 1>&2
+if ! input_file="$(jq -r '.path // ""' <<< "$input_json" 2>&1)"; then
+	echo "write_file: input is not valid JSON: $input_file" 1>&2
 	exit 2
 fi
-if [[ -z "$input_path" ]]; then
+if [[ -z "$input_file" ]]; then
 	echo "write_file: missing required \"path\" in JSON input; expected {\"path\": \"<file>\", \"content\": \"...\"}" 1>&2
 	exit 2
 fi
@@ -52,25 +51,41 @@ fi
 # ==============================================================================
 # Expand ~ and $VARs like read_file does; the path never reaches a shell reparse.
 # Error messages echo the original path, never the expanded one, so secret env values cannot leak into output.
-expanded_path="$input_path"
+expanded_file="$input_file"
 if command -v python3 > /dev/null 2>&1; then
-	expanded_path="$(printf '%s' "$input_path" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+	expanded_file="$(printf '%s' "$input_file" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+else
+	echo "write_file: warning: python3 is not installed; using the path without expanding ~ and \$VARs" 1>&2
 fi
 
-if [[ -d "$expanded_path" ]]; then
-	echo "write_file: path is a directory: $input_path" 1>&2
+if [[ -d "$expanded_file" ]]; then
+	echo "write_file: path is a directory: $input_file" 1>&2
 	exit 1
 fi
 
-parent_dir="$(dirname -- "$expanded_path")"
+parent_dir="$(dirname -- "$expanded_file")"
 if ! mkdir -p -- "$parent_dir" 2>/dev/null; then
-	echo "write_file: cannot create parent directory for: $input_path" 1>&2
+	echo "write_file: cannot create parent directory for: $input_file" 1>&2
 	exit 1
 fi
+
+# Write to a sibling temp file then rename, so a mid-write kill (timeout) leaves the
+# original intact instead of a truncated file. The temp lives in parent_dir so the
+# rename stays on one filesystem and is atomic.
+temp_file="$(mktemp -- "$parent_dir/.write_file.XXXXXX" 2>/dev/null)"
+if [[ -z "$temp_file" ]]; then
+	echo "write_file: cannot create temp file in: $parent_dir" 1>&2
+	exit 1
+fi
+trap 'rm -f -- "$temp_file"' EXIT
 
 # jq -j prints the raw string without the trailing newline jq -r would add.
-if ! jq -j '.content' <<< "$input_json" > "$expanded_path"; then
-	echo "write_file: failed to write: $input_path" 1>&2
+if ! jq -j '.content' <<< "$input_json" > "$temp_file"; then
+	echo "write_file: failed to write: $input_file" 1>&2
+	exit 1
+fi
+if ! mv -f -- "$temp_file" "$expanded_file"; then
+	echo "write_file: failed to finalize write: $input_file" 1>&2
 	exit 1
 fi
 
@@ -78,5 +93,6 @@ fi
 # ==============================================================================
 # RESULTS
 # ==============================================================================
-byte_count="$(wc -c < "$expanded_path")"
-echo "wrote $input_path ($byte_count bytes)"
+num_bytes="$(wc -c < "$expanded_file")"
+num_lines="$(wc -l < "$expanded_file")"
+echo "wrote $input_file ($num_lines lines, $num_bytes bytes)"
