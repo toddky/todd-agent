@@ -30,7 +30,12 @@ todd-agent/
 │       └── tui/         # full-screen TUI frontend (later)
 ├── tools/               # executable tool scripts, any language (see Tool Contract)
 │   ├── read_file        # read a file's contents
+│   ├── write_file       # create or overwrite a file, creating parent dirs
+│   ├── edit_file        # exact-string replacements (python3); each old_text must match exactly once
 │   ├── bash             # run a shell command
+│   ├── grep             # regex search, file:line:text output (rg-first, grep -rn fallback)
+│   ├── glob             # find files by glob pattern (rg-first, find fallback)
+│   ├── list_dir         # list a directory as '<type> <name>' lines: f=file, d=directory, l=symlink
 │   └── ...
 └── docs/
     └── examples/        # reference notes on how other coding agents define tools and hooks
@@ -71,10 +76,21 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 - A normal call receives JSON arguments on stdin and writes its result text to stdout.
 - Failure reasons go to stderr, never stdout.
 - Exit codes: `0` = success, `1` = runtime failure (e.g. file not found), `2` = malformed call (bad or missing arguments).
-- The agent enforces the timeout around the exec (`timeout_secs`, default 10s); tools never time themselves out.
+- The agent enforces the timeout around the exec (a hard kill at `timeout_secs` + 5s grace); tools never time themselves out.
 - Never pass tool input to a shell reparse (`eval`, `bash -c`); expand paths with facilities that treat the input as data.
   Exception: `tools/bash`, where the command IS the payload and shell interpretation is the feature.
 - Error messages echo the original input (e.g. the unexpanded path), never expanded values, so secret env vars cannot leak into model-visible output.
+
+Conventions the current tools follow beyond the hard contract:
+
+- Scripts are organized with SCHEMA / PARSE / MAIN / RESULTS section header banners.
+- Path inputs are expanded with Python's `expanduser`/`expandvars`, never a shell reparse.
+- Search tools (`grep`, `glob`) cap output at 200 lines/paths (`max_results`) and tell the model to narrow when truncated.
+- Search tools (`grep`, `glob`) wrap their walker in `timeout` at a hardcoded budget matching their `timeout_secs`; the agent's 5s grace deadline is the window in which they print partial results with a note instead of dying at the hard kill. The wrapper is skipped only if the budget is under 1s.
+- `rg` is preferred and runs with `--no-ignore` so it does not honor .gitignore (it still skips hidden files, including .git); the fallback (`find`, `grep -rn`) sees everything including hidden files, so results can still differ between hosts.
+- `list_dir` always includes dotfiles: the consumer is a model, and hiding .gitignore/.github/etc would misrepresent the directory.
+- `edit_file` requires each `old_text` to match exactly once; edits apply in order against the evolving content.
+- Tool results with empty stdout reach the model as "(no output)": the wire client substitutes it so omitempty cannot drop the content field, which the proxy rejects.
 
 ## Dependencies
 
