@@ -146,6 +146,10 @@ func toAPI(messages []Message) []apiMessage {
 				if block.IsError {
 					content = "ERROR: " + content
 				}
+				// omitempty would drop an empty content field, which litellm's Anthropic translation rejects.
+				if content == "" {
+					content = "(no output)"
+				}
 				results = append(results, apiMessage{
 					Role:       "tool",
 					Content:    content,
