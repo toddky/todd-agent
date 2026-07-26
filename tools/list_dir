@@ -6,6 +6,9 @@
 #   1 = runtime failure
 #   2 = malformed call (bad arguments)
 
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
 if [[ "${1:-}" == "--schema" ]]; then
 	cat <<'SCHEMA'
 {
@@ -22,11 +25,19 @@ SCHEMA
 	exit 0
 fi
 
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
 if ! input_path="$(jq -r '.path // "."' 2>&1)"; then
 	echo "list_dir: input is not valid JSON: $input_path" 1>&2
 	exit 2
 fi
 
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
 # Expand ~ and $VARs like read_file does; the path never reaches a shell reparse.
 expanded_path="$input_path"
 if command -v python3 > /dev/null 2>&1; then
@@ -40,6 +51,10 @@ if [[ ! -d "$expanded_path" ]]; then
 	exit 1
 fi
 
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
 # Dotfiles are always listed: the consumer is a model, and hiding .gitignore/.github/etc would misrepresent the directory.
 # The -L test comes first: a symlink to a directory is both, and should print as l.
 shopt -s nullglob dotglob
