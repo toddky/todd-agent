@@ -49,6 +49,8 @@ if [[ -n "$context" && ! "$context" =~ ^[0-9]+$ ]]; then
 	echo "grep: \"context\" must be a non-negative integer; got: $context" 1>&2
 	exit 2
 fi
+# Read timeout_secs from our own schema so the value has a single source of truth.
+search_timeout="$("$0" --schema | jq -r '.timeout_secs')"
 
 
 # ==============================================================================
@@ -69,9 +71,6 @@ fi
 
 # 200 lines is plenty for a model to scan; more usually means the pattern needs narrowing.
 max_results=200
-# Self-time so the 5s grace window before the agent's hard kill can report partial results.
-# 10 mirrors timeout_secs in the schema above; keep the two in sync.
-search_timeout=10
 
 search_cmd=()
 if command -v rg > /dev/null 2>&1; then
