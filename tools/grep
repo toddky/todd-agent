@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Search file contents for a regex pattern. Returns 'file:line:text' matches. Input: {\"pattern\": \"<regex>\", \"path\": \"<search dir or file>\", \"glob\": \"<file filter>\", \"context\": <lines>}; path defaults to the current directory. Uses ripgrep when available (skips hidden and .gitignore'd files); falls back to grep -rn (sees everything). A slow search is cut off early and reports partial results. Output is capped at 200 lines.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "pattern": {"type": "string", "description": "Regex pattern to search for"},
+      "path": {"type": "string", "description": "Directory or file to search; defaults to the current directory"},
+      "glob": {"type": "string", "description": "Only search files matching this glob, e.g. '*.go'"},
+      "context": {"type": "integer", "description": "Lines of context to show around each match"}
+    },
+    "required": ["pattern"]
+  },
+  "timeout_secs": 10
+}
+SCHEMA
+	exit 0
+fi
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json="$(cat)"
+if ! pattern="$(jq -r '.pattern // ""' <<< "$input_json" 2>&1)"; then
+	echo "grep: input is not valid JSON: $pattern" 1>&2
+	exit 2
+fi
+search_path="$(jq -r '.path // "."' <<< "$input_json")"
+file_glob="$(jq -r '.glob // ""' <<< "$input_json")"
+context="$(jq -r '.context // "" | tostring' <<< "$input_json")"
+if [[ -z "$pattern" ]]; then
+	echo "grep: missing required \"pattern\" in JSON input; expected {\"pattern\": \"<regex>\"}" 1>&2
+	exit 2
+fi
+if [[ -n "$context" && ! "$context" =~ ^[0-9]+$ ]]; then
+	echo "grep: \"context\" must be a non-negative integer; got: $context" 1>&2
+	exit 2
+fi
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+# Expand ~ and $VARs like read_file does; the path never reaches a shell reparse.
+expanded_path="$search_path"
+if command -v python3 > /dev/null 2>&1; then
+	expanded_path="$(printf '%s' "$search_path" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+fi
+
+if [[ ! -e "$expanded_path" ]]; then
+	echo "grep: no such file or directory: $search_path" 1>&2
+	exit 1
+fi
+
+# 200 lines is plenty for a model to scan; more usually means the pattern needs narrowing.
+max_results=200
+# Cut the search off 2s before the agent's own timeout so partial results reach the model instead of a kill.
+# Reading our own schema keeps the two values in sync automatically.
+tool_timeout="$("$0" --schema | jq -r '.timeout_secs')"
+search_timeout=$((tool_timeout - 2))
+
+search_cmd=()
+if command -v rg > /dev/null 2>&1; then
+	# rg is the fast searcher; it skips hidden files (including .git) and respects .gitignore by default.
+	search_cmd=(rg -n --no-heading -e "$pattern")
+	if [[ -n "$file_glob" ]]; then
+		search_cmd+=(--glob "$file_glob")
+	fi
+	if [[ -n "$context" ]]; then
+		search_cmd+=(-C "$context")
+	fi
+	search_cmd+=(-- "$expanded_path")
+else
+	# Fallback searcher sees everything, including .git and ignored files, unlike the rg tier.
+	# -I skips binary files, -E matches rg's default regex flavor more closely than BRE.
+	search_cmd=(grep -rnEI -e "$pattern")
+	if [[ -n "$file_glob" ]]; then
+		search_cmd+=(--include "$file_glob")
+	fi
+	if [[ -n "$context" ]]; then
+		search_cmd+=(-C "$context")
+	fi
+	search_cmd+=("$expanded_path")
+fi
+
+# A declared timeout of 2s or less leaves no useful search budget, so run unwrapped and let the agent's timeout rule.
+if (( search_timeout >= 1 )); then
+	search_cmd=(timeout "$search_timeout" "${search_cmd[@]}")
+fi
+matches="$("${search_cmd[@]}" 2>/dev/null)"
+search_status=$?
+
+# timeout(1) exits 124 when it had to kill the searcher; whatever was printed so far is still usable.
+timed_out=""
+if [[ $search_status -eq 124 ]]; then
+	timed_out="yes"
+fi
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+if [[ -z "$matches" ]]; then
+	if [[ -n "$timed_out" ]]; then
+		echo "grep: search timed out after ${search_timeout}s with no matches; narrow the path or pattern" 1>&2
+	else
+		echo "grep: no matches for: $pattern" 1>&2
+	fi
+	exit 1
+fi
+
+total_count="$(wc -l <<< "$matches")"
+head -n "$max_results" <<< "$matches"
+if (( total_count > max_results )); then
+	echo "... truncated: showing $max_results of $total_count lines; narrow the pattern, path, or glob"
+fi
+if [[ -n "$timed_out" ]]; then
+	echo "... search timed out after ${search_timeout}s: results are partial; narrow the path or pattern"
+fi
