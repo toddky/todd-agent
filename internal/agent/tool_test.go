@@ -208,8 +208,8 @@ sleep 10
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("Run() error = %v, want timeout error", err)
 	}
-	// 5s: generously above the 1s timeout but far below the 10s sleep, so a hang is caught.
-	if elapsed > 5*time.Second {
+	// 9s: above the 1s timeout + 5s grace + 1s WaitDelay, but below the 10s sleep, so a hang is caught.
+	if elapsed > 9*time.Second {
 		t.Errorf("Run() took %v, timeout was not enforced", elapsed)
 	}
 }
