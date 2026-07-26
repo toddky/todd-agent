@@ -47,7 +47,7 @@ fi
 # </dev/null so commands that read stdin fail fast instead of hanging until the agent's timeout.
 bash -c "$command_text" </dev/null
 command_status=$?
-if [[ $command_status -ne 0 ]]; then
+if (( command_status != 0 )); then
 	echo "bash: command exited with status $command_status" 1>&2
 	exit 1
 fi
