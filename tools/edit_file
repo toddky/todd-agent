@@ -8,6 +8,15 @@
 import json
 import os
 import sys
+import tempfile
+
+# ==============================================================================
+# VERSION
+# ==============================================================================
+# f-strings (used throughout) require 3.6; nothing here needs anything newer.
+if sys.version_info < (3, 6):
+    sys.stderr.write("edit_file: requires Python 3.6 or newer\n")
+    sys.exit(1)
 
 # ==============================================================================
 # SCHEMA
@@ -39,7 +48,6 @@ SCHEMA = {
         },
         "required": ["path", "edits"],
     },
-    "timeout_secs": 10,
 }
 
 if len(sys.argv) > 1 and sys.argv[1] == "--schema":
@@ -76,6 +84,8 @@ for position, edit in enumerate(edits):
         malformed(f'edits[{position}] must be an object with string "old_text" and "new_text"')
     if edit["old_text"] == "":
         malformed(f'edits[{position}].old_text must not be empty')
+    if edit["old_text"] == edit["new_text"]:
+        malformed(f'edits[{position}].old_text and new_text are identical; this edit would change nothing')
 
 
 # ==============================================================================
@@ -105,9 +115,20 @@ for position, edit in enumerate(edits):
 # ==============================================================================
 # RESULTS
 # ==============================================================================
+# Write to a temp file in the same directory then atomically replace, so a crash mid-write
+# leaves the original intact instead of a truncated file. Same-dir keeps the replace on one filesystem.
+original_mode = os.stat(expanded_path).st_mode
+target_dir = os.path.dirname(expanded_path) or "."
 try:
-    with open(expanded_path, "w", encoding="utf-8") as edited_file:
-        edited_file.write(content)
+    temp_fd, temp_file = tempfile.mkstemp(dir=target_dir, prefix=".edit_file.")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as edited_file:
+            edited_file.write(content)
+        os.chmod(temp_file, original_mode)
+        os.replace(temp_file, expanded_path)
+    except OSError:
+        os.unlink(temp_file)
+        raise
 except OSError as write_error:
     failed(f"cannot write {input_path}: {write_error}")
 
