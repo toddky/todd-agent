@@ -6,6 +6,9 @@
 #   1 = runtime failure
 #   2 = malformed call (bad arguments)
 
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
 if [[ "${1:-}" == "--schema" ]]; then
 	cat <<'SCHEMA'
 {
@@ -25,6 +28,10 @@ SCHEMA
 	exit 0
 fi
 
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
 input_json="$(cat)"
 if ! pattern="$(jq -r '.pattern // ""' <<< "$input_json" 2>&1)"; then
 	echo "glob: input is not valid JSON: $pattern" 1>&2
@@ -41,6 +48,10 @@ if [[ -n "$depth" && ! "$depth" =~ ^[0-9]+$ ]]; then
 	exit 2
 fi
 
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
 # Expand ~ and $VARs like read_file does; the path never reaches a shell reparse.
 expanded_path="$search_path"
 if command -v python3 > /dev/null 2>&1; then
@@ -83,6 +94,10 @@ if [[ $walk_status -eq 124 ]]; then
 	timed_out="yes"
 fi
 
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
 if [[ -z "$matches" ]]; then
 	if [[ -n "$timed_out" ]]; then
 		echo "glob: walk timed out after ${walk_timeout}s with no matches; narrow the path or add a depth limit" 1>&2
