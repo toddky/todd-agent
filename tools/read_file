@@ -43,8 +43,8 @@ fi
 # ==============================================================================
 # MAIN
 # ==============================================================================
-# Expand ~ and $VARs with Python's expanduser/expandvars; the path never reaches a shell reparse, so $(...) stays inert.
-# Error messages below print the original path, never the expanded one, so secret env values (e.g. $ANTHROPIC_API_KEY) cannot leak into output.
+# Expand ~ and $VARs via Python so the path never reaches a shell reparse.
+# Errors echo the original path, never the expanded one, so secret env values cannot leak.
 expanded_file="$input_file"
 if command -v python3 > /dev/null 2>&1; then
 	expanded_file="$(printf '%s' "$input_file" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
@@ -56,13 +56,14 @@ if [[ ! -f "$expanded_file" ]]; then
 	echo "read_file: file not found: $input_file" 1>&2
 	parent_dir="$(dirname -- "$expanded_file")"
 	base_name="$(basename -- "$expanded_file")"
-	# Match on the name without its extension; dotfiles like .bashrc would strip to "" and match everything, so keep the full name for them.
+	# Match on the name without its extension to catch typos.
+	# Dotfiles like .bashrc strip to "" so keep the full name for them.
 	stem="${base_name%.*}"
 	if [[ -z "$stem" ]]; then
 		stem="$base_name"
 	fi
-	# Suggest near-miss names so the model can correct a typo'd path; -i catches case mistakes.
-	# git ls-files is index-only (fast on large repos), ':/' prints repo-root-relative paths, 10 keeps the list short.
+	# Suggest near-miss names so the model can correct a typo'd path.
+	# git ls-files is index-only so it stays fast on large repos.
 	similar_files="$(git ls-files --full-name ':/' 2>/dev/null | grep -iF "$stem" | head -10)"
 	if [[ -z "$similar_files" && -d "$parent_dir" ]]; then
 		similar_files="$(find "$parent_dir" -maxdepth 1 -type f -iname "*${stem}*" -print 2>/dev/null | head -10)"
@@ -80,6 +81,23 @@ fi
 # ==============================================================================
 # RESULTS
 # ==============================================================================
+# A NUL in the first 8000 bytes means binary; reject before size since a binary file is out regardless.
+# tr counts NULs because grep can't take a NUL argument: the shell truncates it and every file matches.
+num_nul="$(head -c 8000 -- "$expanded_file" | LC_ALL=C tr -dc '\000' | wc -c)"
+if (( num_nul > 0 )); then
+	echo "read_file: refusing to read binary file: $input_file" 1>&2
+	exit 1
+fi
+
+# 5MB is far larger than any source file a model should read whole.
+# Bigger usually means the caller wants grep, not a full dump into context.
+max_bytes=5000000
+num_bytes="$(wc -c < "$expanded_file")"
+if (( num_bytes > max_bytes )); then
+	echo "read_file: file too large ($num_bytes bytes, max $max_bytes): $input_file; search it with grep instead of reading it whole" 1>&2
+	exit 1
+fi
+
 if ! cat -- "$expanded_file"; then
 	echo "read_file: failed to read: $input_file" 1>&2
 	exit 1
