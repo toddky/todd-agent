@@ -19,9 +19,12 @@ import (
 )
 
 // defaultToolTimeout applies when a tool's schema omits timeout_secs.
-// 10s is the agreed default for quick tools like read; the agent enforces
-// the timeout around the exec, tools don't time themselves out.
+// 10s is the agreed default for quick tools like read.
 const defaultToolTimeout = 10 * time.Second
+
+// graceTimeout is added to a tool's declared timeout to form the agent's hard-kill deadline.
+// The 5s grace lets a tool exit cleanly before the agent force-kills it.
+const graceTimeout = 5 * time.Second
 
 // schemaTimeout caps how long a tool may take to answer --schema during
 // discovery. 5s: discovery runs across every tool at startup, so a hung
@@ -166,8 +169,8 @@ const (
 )
 
 // Run executes a tool with the JSON input on stdin and returns its stdout.
-// The tool's timeout is enforced here, around the exec, so individual tools
-// never implement their own.
+// The agent enforces the timeout here, around the exec, so tools never time themselves out.
+// The deadline is the tool's declared timeout plus graceTimeout.
 func (r *Registry) Run(name string, input json.RawMessage) (string, error) {
 	tool, known := r.Tools[name]
 	if !known {
@@ -177,7 +180,8 @@ func (r *Registry) Run(name string, input json.RawMessage) (string, error) {
 		input = json.RawMessage("{}")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), tool.Timeout)
+	// The deadline adds graceTimeout so a tool has room to exit cleanly before this hard kill.
+	ctx, cancel := context.WithTimeout(context.Background(), tool.Timeout+graceTimeout)
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
@@ -189,7 +193,7 @@ func (r *Registry) Run(name string, input json.RawMessage) (string, error) {
 	cmd.WaitDelay = time.Second
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("tool %s timed out after %s", name, tool.Timeout)
+		return "", fmt.Errorf("tool %s timed out after %s", name, tool.Timeout+graceTimeout)
 	}
 	if err != nil {
 		var exitErr *exec.ExitError
