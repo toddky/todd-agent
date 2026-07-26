@@ -12,7 +12,7 @@
 if [[ "${1:-}" == "--schema" ]]; then
 	cat <<'SCHEMA'
 {
-  "description": "Search file contents for a regex pattern. Returns 'file:line:text' matches. Input: {\"pattern\": \"<regex>\", \"path\": \"<search dir or file>\", \"glob\": \"<file filter>\", \"context\": <lines>}; path defaults to the current directory. Uses ripgrep when available (skips hidden and .gitignore'd files); falls back to grep -rn (sees everything). A slow search is cut off early and reports partial results. Output is capped at 200 lines.",
+  "description": "Search file contents for a regex pattern. Returns 'file:line:text' matches. Input: {\"pattern\": \"<regex>\", \"path\": \"<search dir or file>\", \"glob\": \"<file filter>\", \"context\": <lines>}; path defaults to the current directory. Uses ripgrep when available (skips hidden files but does not respect .gitignore); falls back to grep -rn (sees everything). A slow search is cut off early and reports partial results. Output is capped at 200 lines.",
   "input_schema": {
     "type": "object",
     "properties": {
@@ -38,7 +38,7 @@ if ! pattern="$(jq -r '.pattern // ""' <<< "$input_json" 2>&1)"; then
 	echo "grep: input is not valid JSON: $pattern" 1>&2
 	exit 2
 fi
-search_path="$(jq -r '.path // "."' <<< "$input_json")"
+search_target="$(jq -r '.path // "."' <<< "$input_json")"
 file_glob="$(jq -r '.glob // ""' <<< "$input_json")"
 context="$(jq -r '.context // "" | tostring' <<< "$input_json")"
 if [[ -z "$pattern" ]]; then
@@ -55,34 +55,36 @@ fi
 # MAIN
 # ==============================================================================
 # Expand ~ and $VARs like read_file does; the path never reaches a shell reparse.
-expanded_path="$search_path"
+expanded_target="$search_target"
 if command -v python3 > /dev/null 2>&1; then
-	expanded_path="$(printf '%s' "$search_path" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+	expanded_target="$(printf '%s' "$search_target" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+else
+	echo "grep: warning: python3 is not installed; using the path without expanding ~ and \$VARs" 1>&2
 fi
 
-if [[ ! -e "$expanded_path" ]]; then
-	echo "grep: no such file or directory: $search_path" 1>&2
+if [[ ! -e "$expanded_target" ]]; then
+	echo "grep: no such file or directory: $search_target" 1>&2
 	exit 1
 fi
 
 # 200 lines is plenty for a model to scan; more usually means the pattern needs narrowing.
 max_results=200
-# Cut the search off 2s before the agent's own timeout so partial results reach the model instead of a kill.
-# Reading our own schema keeps the two values in sync automatically.
-tool_timeout="$("$0" --schema | jq -r '.timeout_secs')"
-search_timeout=$((tool_timeout - 2))
+# Self-time so the 5s grace window before the agent's hard kill can report partial results.
+# 10 mirrors timeout_secs in the schema above; keep the two in sync.
+search_timeout=10
 
 search_cmd=()
 if command -v rg > /dev/null 2>&1; then
-	# rg is the fast searcher; it skips hidden files (including .git) and respects .gitignore by default.
-	search_cmd=(rg -n --no-heading -e "$pattern")
+	# rg is the fast searcher; --no-ignore stops it honoring .gitignore so it sees the same files as
+	# the grep fallback. It still skips hidden files (including .git) by default.
+	search_cmd=(rg -n --no-heading --no-ignore -e "$pattern")
 	if [[ -n "$file_glob" ]]; then
 		search_cmd+=(--glob "$file_glob")
 	fi
 	if [[ -n "$context" ]]; then
 		search_cmd+=(-C "$context")
 	fi
-	search_cmd+=(-- "$expanded_path")
+	search_cmd+=(-- "$expanded_target")
 else
 	# Fallback searcher sees everything, including .git and ignored files, unlike the rg tier.
 	# -I skips binary files, -E matches rg's default regex flavor more closely than BRE.
@@ -93,10 +95,10 @@ else
 	if [[ -n "$context" ]]; then
 		search_cmd+=(-C "$context")
 	fi
-	search_cmd+=("$expanded_path")
+	search_cmd+=("$expanded_target")
 fi
 
-# A declared timeout of 2s or less leaves no useful search budget, so run unwrapped and let the agent's timeout rule.
+# A budget under 1s leaves no useful search time, so run unwrapped and let the agent's deadline rule.
 if (( search_timeout >= 1 )); then
 	search_cmd=(timeout "$search_timeout" "${search_cmd[@]}")
 fi
@@ -105,7 +107,7 @@ search_status=$?
 
 # timeout(1) exits 124 when it had to kill the searcher; whatever was printed so far is still usable.
 timed_out=""
-if [[ $search_status -eq 124 ]]; then
+if (( search_status == 124 )); then
 	timed_out="yes"
 fi
 
