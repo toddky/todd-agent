@@ -6,6 +6,9 @@
 #   1 = runtime failure
 #   2 = malformed call (bad arguments)
 
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
 if [[ "${1:-}" == "--schema" ]]; then
 	cat <<'SCHEMA'
 {
@@ -23,6 +26,10 @@ SCHEMA
 	exit 0
 fi
 
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
 if ! input_file="$(jq -r '.path // empty' 2>&1)"; then
 	echo "read_file: input is not valid JSON: $input_file" 1>&2
 	exit 2
@@ -32,6 +39,10 @@ if [[ -z "$input_file" ]]; then
 	exit 2
 fi
 
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
 # Expand ~ and $VARs with Python's expanduser/expandvars; the path never reaches a shell reparse, so $(...) stays inert.
 # Error messages below print the original path, never the expanded one, so secret env values (e.g. $ANTHROPIC_API_KEY) cannot leak into output.
 expanded_file="$input_file"
@@ -65,6 +76,10 @@ EOF
 	exit 1
 fi
 
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
 if ! cat -- "$expanded_file"; then
 	echo "read_file: failed to read: $input_file" 1>&2
 	exit 1
