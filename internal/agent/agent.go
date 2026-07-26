@@ -7,8 +7,13 @@ import (
 	"github.com/toddky/todd-agent/internal/llm"
 )
 
+// ResponseStreamer is the slice of the LLM client the agent loop needs; tests substitute a fake.
+type ResponseStreamer interface {
+	CompleteStream(messages []llm.Message, tools []llm.ToolDef, onText func(string)) (*llm.Response, error)
+}
+
 type Agent struct {
-	Client *llm.Client
+	Client ResponseStreamer
 	Tools  *Registry
 	// AllowExit advertises the internal exit tool so the model can terminate the agent process.
 	AllowExit bool
