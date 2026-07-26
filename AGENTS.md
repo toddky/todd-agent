@@ -16,9 +16,11 @@ todd-agent/
 ├── internal/
 │   ├── agent/           # engine — no terminal I/O allowed
 │   │   ├── agent.go     # agent loop: send prompt, handle tool calls, iterate
+│   │   ├── agent_test.go # turn loop + exit tool tests, driven by a fake ResponseStreamer
 │   │   ├── session.go   # message history, session state
 │   │   ├── event.go     # event types: TextDelta, ToolCallStarted, ToolResult, TurnComplete, Error
-│   │   └── tool.go      # tool discovery + dispatch: execs scripts from tools/
+│   │   ├── tool.go      # tool discovery + dispatch: execs scripts from tools/
+│   │   └── tool_test.go # tool contract tests against fake scripts in a tempdir
 │   ├── llm/
 │   │   ├── llm.go       # LLM API client (OpenAI Chat Completions wire format, litellm-compatible)
 │   │   └── llm_test.go  # table-driven tests for the wire-format translators
@@ -97,6 +99,8 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 - Tests are stdlib `testing` only, table-driven, in `foo_test.go` beside `foo.go`, same package so unexported functions are reachable.
 - Run everything with `go test ./...`; there is no separate test directory or framework.
 - Pure functions get tests first (e.g. the wire-format translators in `internal/llm`); exec- and network-dependent code needs fakes (tempdir tool scripts, `httptest`) and comes later.
+- The agent loop is tested through the `ResponseStreamer` interface (`Agent.Client`): tests inject a scripted fake instead of the real HTTP client.
+- Tool contract tests write throwaway tool scripts into `t.TempDir()` and run discovery/dispatch against them; no fixtures are checked in.
 
 ## Operational Rules
 
