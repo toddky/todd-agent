@@ -45,8 +45,9 @@ Each subdirectory under `agents/` is a self-contained agent definition, named af
 agents/
 └── disk_cleanup/
     ├── tools/
+    │   ├── list_dir            # symlink to the top-level tools/list_dir
     │   ├── list_dir_with_size  # list a directory with per-entry disk usage
-    │   └── safe_delete_file    # delete a file with guardrails (minimum age, must be untracked in git)
+    │   └── write_cleanup_script  # write ./cleanup.sh for the user to review and run; the agent's only write, it never deletes
     ├── prompt.md            # the agent's user/task prompt
     └── system_prompts/
         ├── logs.md          # how to check if a log file is safe to delete
