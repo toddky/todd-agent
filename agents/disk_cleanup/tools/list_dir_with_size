@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "List directory contents with per-entry disk usage, largest first, including dotfiles. Each line is '<type> <size> <name>': f=file, d=directory, l=symlink; directory sizes are recursive. Input: {\"path\": \"<directory>\"}; path defaults to the current directory.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "Directory to list; defaults to the current directory"}
+    }
+  },
+  "timeout_secs": 60
+}
+SCHEMA
+	exit 0
+fi
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+if ! input_dir="$(jq -r '.path // "."' 2>&1)"; then
+	echo "list_dir_with_size: input is not valid JSON: $input_dir" 1>&2
+	exit 2
+fi
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+# Expand ~ and $VARs like list_dir does; the path never reaches a shell reparse.
+expanded_dir="$input_dir"
+if command -v python3 > /dev/null 2>&1; then
+	expanded_dir="$(printf '%s' "$input_dir" | python3 -c 'import os, sys; print(os.path.expandvars(os.path.expanduser(sys.stdin.read())))')"
+else
+	echo "list_dir_with_size: warning: python3 is not installed; using the path without expanding ~ and \$VARs" 1>&2
+fi
+
+if [[ ! -d "$expanded_dir" ]]; then
+	echo "list_dir_with_size: not a directory: $input_dir" 1>&2
+	exit 1
+fi
+
+# Dotfiles are always listed so the model sees the true directory contents.
+shopt -s nullglob dotglob
+entries=("$expanded_dir"/*)
+if (( ${#entries[@]} == 0 )); then
+	echo "(empty directory)"
+	exit 0
+fi
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+# One du call for all entries; -k gives KiB so sort -rn puts the biggest first.
+# du does not follow symlinks, so a symlink reports its own size, not its target's.
+du -sk -- "${entries[@]}" 2>/dev/null | sort -rn | while IFS=$'\t' read -r size_kib entry; do
+	name="$(basename -- "$entry")"
+	# The -L test comes first: a symlink to a directory is both, and should print as l.
+	if [[ -L "$entry" ]]; then
+		entry_type="l"
+	elif [[ -d "$entry" ]]; then
+		entry_type="d"
+	else
+		entry_type="f"
+	fi
+	if command -v numfmt > /dev/null 2>&1; then
+		size_human="$(numfmt --to=iec --suffix=B $(( size_kib * 1024 )))"
+	else
+		size_human="${size_kib}K"
+	fi
+	printf '%s %s %s\n' "$entry_type" "$size_human" "$name"
+done
+
