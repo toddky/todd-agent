@@ -15,6 +15,8 @@ type ResponseStreamer interface {
 type Agent struct {
 	Client ResponseStreamer
 	Tools  *Registry
+	// SystemPrompt is sent as a system message ahead of the history when non-empty.
+	SystemPrompt string
 	// AllowExit advertises the internal exit tool so the model can terminate the agent process.
 	AllowExit bool
 }
@@ -57,7 +59,13 @@ func (a *Agent) Turn(messages []llm.Message, notify func(Event)) ([]llm.Message,
 		defs = append(defs, exitToolDef)
 	}
 	for {
-		response, err := a.Client.CompleteStream(messages, defs, func(text string) {
+		// The system message is prepended per request, not stored in the returned
+		// history, so callers cannot accumulate duplicates across turns.
+		messagesCopy := messages
+		if a.SystemPrompt != "" {
+			messagesCopy = append([]llm.Message{llm.TextMessage("system", a.SystemPrompt)}, messages...)
+		}
+		response, err := a.Client.CompleteStream(messagesCopy, defs, func(text string) {
 			notify(Event{Type: EventTextDelta, Text: text})
 		})
 		if err != nil {
