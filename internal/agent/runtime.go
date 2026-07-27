@@ -63,8 +63,11 @@ func Setup(toolsDirs ...string) error {
 			}
 
 			dst := filepath.Join(toolsDir, entry.Name())
-			// Also replaces a same-name link from an earlier dir, so the later dir wins.
-			// A crashed agent with the same pid can leave a stale link too.
+			// A same-name link from an earlier dir means a shadow; warn so the loss is visible.
+			// Readlink also matches a crashed agent's stale link; a spurious warning there is harmless.
+			if shadowed, err := os.Readlink(dst); err == nil {
+				fmt.Fprintf(os.Stderr, "warning: tool %s from %s shadows %s\n", entry.Name(), dir, shadowed)
+			}
 			if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("clear stale tool link %s: %w", dst, err)
 			}
