@@ -75,21 +75,58 @@ func (r *Response) Text() string {
 	return out
 }
 
+// anthropicCacheSettings configures Anthropic prompt caching.
+// litellm forwards the cache_control markers to Anthropic even over this OpenAI-shaped wire format.
+type anthropicCacheSettings struct {
+	Enabled bool
+	Type    string
+	TTL     string
+}
+
+var anthropicCache = anthropicCacheSettings{
+	// Always on because it only saves cost.
+	Enabled: true,
+	// "ephemeral" is the only breakpoint type Anthropic supports today.
+	Type: "ephemeral",
+	// "5m" is Anthropic's default and cheapest tier (1.25x write premium vs 2x for "1h").
+	TTL: "5m",
+}
+
+// cacheControl is the wire form of one cache breakpoint marker.
+type cacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl"`
+}
+
+var anthropicCacheMarker = &cacheControl{Type: anthropicCache.Type, TTL: anthropicCache.TTL}
+
+// apiContentPart is one element of a message's content when it must carry a cache_control marker.
+// Plain messages keep their content as a flat string (see apiMessage.Content).
+type apiContentPart struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
 // apiMessage is one Chat Completions message on the wire.
-// Unlike Message, text is a flat string; tool calls and tool results get dedicated fields.
 // ToolCallID is set only on role "tool" messages to link a result to the call it answers.
 type apiMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content is a flat string normally.
+	// markCacheBreakpoint switches it to []apiContentPart, since cache_control cannot attach to a bare string.
+	Content    interface{}   `json:"content,omitempty"`
 	ToolCalls  []apiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+	// CacheControl is the message-level breakpoint form, used where content parts are unavailable.
+	// litellm copies it onto the outer Anthropic content block.
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
 }
 
 // apiToolCall is one tool invocation the model makes: which tool, with what arguments.
 // The Chat Completions equivalent of an Anthropic tool_use block.
 type apiToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"`
+	ID       string      `json:"id"`
+	Type     string      `json:"type"`
 	Function apiFunction `json:"function"`
 }
 
@@ -109,19 +146,21 @@ type apiTool struct {
 		Description string          `json:"description"`
 		Parameters  json.RawMessage `json:"parameters"`
 	} `json:"function"`
+	// CacheControl sits on the tool entry itself, where Anthropic's tool-array caching expects the breakpoint.
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
 }
 
 type request struct {
-	Model     string        `json:"model"`
-	MaxTokens int           `json:"max_tokens"`
+	Model     string       `json:"model"`
+	MaxTokens int          `json:"max_tokens"`
 	Messages  []apiMessage `json:"messages"`
 	Tools     []apiTool    `json:"tools,omitempty"`
-	Stream    bool          `json:"stream,omitempty"`
+	Stream    bool         `json:"stream,omitempty"`
 }
 
 // toAPI flattens block-structured history into Chat Completions messages.
 // Each tool_result block becomes its own "tool" role message, as the wire format requires.
-func toAPI(messages []Message) []apiMessage {
+func toAPI(messages []Message, cache bool) []apiMessage {
 	var wire []apiMessage
 	for _, message := range messages {
 		var text string
@@ -162,10 +201,29 @@ func toAPI(messages []Message) []apiMessage {
 		}
 		wire = append(wire, results...)
 	}
+	// Anthropic caches everything through the marked message, so the history before the newest turn is reused.
+	if cache && len(wire) > 0 {
+		markCacheBreakpoint(&wire[len(wire)-1])
+	}
 	return wire
 }
 
-func toAPITools(tools []ToolDef) []apiTool {
+// markCacheBreakpoint switches a message's flat-string content into the []apiContentPart form.
+// The cache_control marker has nowhere to attach on a bare string.
+func markCacheBreakpoint(message *apiMessage) {
+	text, ok := message.Content.(string)
+	// litellm's Anthropic translation requires flat-string tool content, so the marker goes at message level.
+	// The last message usually IS a tool result in the agent loop, so skipping it would leave history uncached.
+	if !ok || message.Role == "tool" {
+		message.CacheControl = anthropicCacheMarker
+		return
+	}
+	message.Content = []apiContentPart{{Type: "text", Text: text, CacheControl: anthropicCacheMarker}}
+}
+
+// toAPITools converts tool definitions to the wire format.
+// When cache is set, the last tool gets a breakpoint so Anthropic caches the rarely-changing tool array.
+func toAPITools(tools []ToolDef, cache bool) []apiTool {
 	var wire []apiTool
 	for _, tool := range tools {
 		var wrapped apiTool
@@ -174,6 +232,9 @@ func toAPITools(tools []ToolDef) []apiTool {
 		wrapped.Function.Description = tool.Description
 		wrapped.Function.Parameters = tool.InputSchema
 		wire = append(wire, wrapped)
+	}
+	if cache && len(wire) > 0 {
+		wire[len(wire)-1].CacheControl = anthropicCacheMarker
 	}
 	return wire
 }
@@ -268,7 +329,7 @@ type completion struct {
 	Choices []struct {
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
-			Content   string         `json:"content"`
+			Content   string        `json:"content"`
 			ToolCalls []apiToolCall `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
@@ -280,8 +341,8 @@ func (c *Client) Complete(messages []Message, tools []ToolDef) (*Response, error
 	resp, err := c.send(request{
 		Model:     c.Model,
 		MaxTokens: maxTokens,
-		Messages:  toAPI(messages),
-		Tools:     toAPITools(tools),
+		Messages:  toAPI(messages, anthropicCache.Enabled),
+		Tools:     toAPITools(tools, anthropicCache.Enabled),
 	})
 	if err != nil {
 		return nil, err
@@ -314,8 +375,8 @@ type chunk struct {
 		Delta        struct {
 			Content   string `json:"content"`
 			ToolCalls []struct {
-				Index    int          `json:"index"`
-				ID       string       `json:"id"`
+				Index    int         `json:"index"`
+				ID       string      `json:"id"`
 				Function apiFunction `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
@@ -329,8 +390,8 @@ func (c *Client) CompleteStream(messages []Message, tools []ToolDef, onText func
 	resp, err := c.send(request{
 		Model:     c.Model,
 		MaxTokens: maxTokens,
-		Messages:  toAPI(messages),
-		Tools:     toAPITools(tools),
+		Messages:  toAPI(messages, anthropicCache.Enabled),
+		Tools:     toAPITools(tools, anthropicCache.Enabled),
 		Stream:    true,
 	})
 	if err != nil {
