@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Write the cleanup script. The output file is always cleanup.sh in the current directory, overwriting any existing one; this is the only file this agent can write, and it never deletes anything itself. The user reviews and runs the script. Input: {\"content\": \"<full script content>\"}.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "content": {"type": "string", "description": "Full content of the cleanup script; replaces any existing cleanup.sh"}
+    },
+    "required": ["content"]
+  },
+  "timeout_secs": 10
+}
+SCHEMA
+	exit 0
+fi
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json="$(cat)"
+# Content may legitimately be an empty string, so test for presence and type rather than emptiness.
+if ! jq -e '.content | type == "string"' <<< "$input_json" > /dev/null 2>&1; then
+	echo "write_cleanup_script: missing required string \"content\" in JSON input; expected {\"content\": \"...\"}" 1>&2
+	exit 2
+fi
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+# The output file is hardcoded so the agent can only ever write ./cleanup.sh, nothing else.
+script_file="cleanup.sh"
+
+# Write to a sibling temp file then rename, so a mid-write kill leaves the original intact.
+temp_file="$(mktemp -- ".write_cleanup_script.XXXXXX" 2>/dev/null)"
+if [[ -z "$temp_file" ]]; then
+	echo "write_cleanup_script: cannot create temp file in the current directory" 1>&2
+	exit 1
+fi
+trap 'rm -f -- "$temp_file"' EXIT
+
+# jq -j prints the raw string without the trailing newline jq -r would add.
+if ! jq -j '.content' <<< "$input_json" > "$temp_file"; then
+	echo "write_cleanup_script: failed to write: $script_file" 1>&2
+	exit 1
+fi
+chmod +x "$temp_file"
+if ! mv -f -- "$temp_file" "$script_file"; then
+	echo "write_cleanup_script: failed to finalize write: $script_file" 1>&2
+	exit 1
+fi
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+num_bytes="$(wc -c < "$script_file")"
+num_lines="$(wc -l < "$script_file")"
+echo "wrote $script_file ($num_lines lines, $num_bytes bytes); review it, then run it yourself"
