@@ -31,6 +31,8 @@ Optional environment variables:
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | API endpoint, for proxies |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` | Model name |
 
+Prompt caching is always on: every request marks cache breakpoints on the tool array and the growing message history, so a caching-aware proxy (e.g. litellm to Anthropic) reuses the unchanged prefix instead of reprocessing it every turn.
+
 ## Project Layout
 
 See the Directory Structure section in `AGENTS.md` (`CLAUDE.md` is a symlink to it).
