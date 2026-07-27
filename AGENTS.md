@@ -66,6 +66,20 @@ Without the flag the tool is not advertised, so the model cannot end the process
 
 These are distinct from the tool script exit codes below: tool codes go to the model, agent codes go to the calling shell.
 
+## Prompt Caching
+
+The `internal/llm` client speaks the OpenAI Chat Completions wire format, but it drives Anthropic's native prompt caching through a litellm-style proxy that translates the request. Caching is always on: it only lowers cost, so there is no flag or env var to turn it off. All the knobs live in one place, the `anthropicCache` struct (`enabled`, `type` = `"ephemeral"`, `ttl` = `"5m"`), and the wire marker `anthropicCacheMarker` is built from it.
+
+The client places two `cache_control` breakpoints per request:
+
+- The last tool definition in the `tools` array, so Anthropic caches the whole (rarely-changing) tool schema block.
+- The last wire message, so Anthropic caches the growing history through that point and reuses it on the next turn.
+
+Anthropic keys caching on content blocks, not bare strings, so the message breakpoint needs somewhere to attach:
+
+- A normal message's flat-string content is switched to a `[]apiContentPart` with the marker on the text part.
+- A tool-role message keeps its flat-string content (litellm's Anthropic translation requires it) and takes the marker at message level instead, where litellm copies it onto the outer Anthropic block. This matters because the last message in the agent loop is usually a tool result; marking only content parts would leave that turn uncached.
+
 ## Tool Contract
 
 Every script in `tools/` must follow this contract (see `tools/read_file` for the reference implementation):
