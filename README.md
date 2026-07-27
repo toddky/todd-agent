@@ -36,3 +36,23 @@ Prompt caching is always on: every request marks cache breakpoints on the tool a
 ## Project Layout
 
 See the Directory Structure section in `AGENTS.md` (`CLAUDE.md` is a symlink to it).
+
+## Agents
+
+Each subdirectory under `agents/` is a self-contained agent definition, named after the agent:
+
+```text
+agents/
+└── disk_cleanup/
+    ├── tools/
+    │   ├── list_dir_with_size  # list a directory with per-entry disk usage
+    │   └── safe_delete_file    # delete a file with guardrails (minimum age, must be untracked in git)
+    ├── prompt.md            # the agent's user/task prompt
+    └── system_prompts/
+        ├── logs.md          # how to check if a log file is safe to delete
+        └── policy.md        # retention policy the agent should follow when deleting files
+```
+
+- `tools/` — executable tool scripts scoped to this agent, following the same tool contract as the top-level `tools/` directory.
+- `prompt.md` — the prompt describing the task this agent runs.
+- `system_prompts/<files>.md` — one or more system prompt fragments loaded for this agent.
