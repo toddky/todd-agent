@@ -125,7 +125,7 @@ func TestToAPI(t *testing.T) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			got := toAPI(testCase.messages)
+			got := toAPI(testCase.messages, false)
 			if !reflect.DeepEqual(got, testCase.want) {
 				t.Errorf("toAPI() = %+v, want %+v", got, testCase.want)
 			}
@@ -133,9 +133,71 @@ func TestToAPI(t *testing.T) {
 	}
 }
 
+func TestMarkCacheBreakpoint(t *testing.T) {
+	t.Run("text message moves content into parts", func(t *testing.T) {
+		wire := toAPI([]Message{
+			TextMessage("user", "hello"),
+			TextMessage("assistant", "hi there"),
+		}, true)
+
+		if wire[0].CacheControl != nil || wire[0].Content != "hello" {
+			t.Errorf("first message = %+v, want untouched flat string", wire[0])
+		}
+		last := wire[len(wire)-1]
+		parts, ok := last.Content.([]apiContentPart)
+		if !ok || len(parts) != 1 {
+			t.Fatalf("last message Content = %+v, want one apiContentPart", last.Content)
+		}
+		if parts[0].Text != "hi there" || parts[0].CacheControl != anthropicCacheMarker {
+			t.Errorf("marked part = %+v, want text preserved and cache_control set", parts[0])
+		}
+		if last.CacheControl != nil {
+			t.Errorf("message-level CacheControl = %+v, want nil when parts carry the marker", last.CacheControl)
+		}
+	})
+
+	t.Run("tool message marks at message level", func(t *testing.T) {
+		wire := toAPI([]Message{{
+			Role: "user",
+			Content: []ContentBlock{
+				{Type: "tool_result", ToolUseID: "call_1", Content: "data"},
+			},
+		}}, true)
+
+		last := wire[len(wire)-1]
+		if last.Content != "data" {
+			t.Errorf("tool message Content = %+v, want flat string preserved", last.Content)
+		}
+		if last.CacheControl != anthropicCacheMarker {
+			t.Errorf("tool message CacheControl = %+v, want anthropicCacheMarker", last.CacheControl)
+		}
+	})
+
+	t.Run("empty history does not panic", func(t *testing.T) {
+		if got := toAPI(nil, true); got != nil {
+			t.Errorf("toAPI(nil, true) = %+v, want nil", got)
+		}
+	})
+}
+
+func TestToAPIToolsCacheBreakpoint(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	got := toAPITools([]ToolDef{
+		{Name: "bash", InputSchema: schema},
+		{Name: "grep", InputSchema: schema},
+	}, true)
+
+	if got[0].CacheControl != nil {
+		t.Errorf("first tool CacheControl = %+v, want nil", got[0].CacheControl)
+	}
+	if got[1].CacheControl != anthropicCacheMarker {
+		t.Errorf("last tool CacheControl = %+v, want anthropicCacheMarker", got[1].CacheControl)
+	}
+}
+
 func TestToAPITools(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object"}`)
-	got := toAPITools([]ToolDef{{Name: "bash", Description: "run a command", InputSchema: schema}})
+	got := toAPITools([]ToolDef{{Name: "bash", Description: "run a command", InputSchema: schema}}, false)
 
 	if len(got) != 1 {
 		t.Fatalf("toAPITools() returned %d tools, want 1", len(got))
