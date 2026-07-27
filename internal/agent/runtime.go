@@ -18,10 +18,11 @@ func GetRuntimeDir() string {
 }
 
 // Setup creates this agent instance's private runtime directory and symlinks
-// every executable tool script from sourceDir into its tools subdir.
+// every executable tool script from each tools dir into its tools subdir.
 // Every running agent gets its own directory (keyed by pid) because each
 // instance can be allowed a different tool set.
-func Setup(sourceDir string) error {
+// On a name collision across dirs, the later dir wins.
+func Setup(toolsDirs ...string) error {
 	baseDir := os.Getenv("XDG_RUNTIME_DIR")
 	if baseDir == "" {
 		// logind puts the per-user runtime dir here; try it before falling back to tmp.
@@ -43,30 +44,33 @@ func Setup(sourceDir string) error {
 		return fmt.Errorf("create tools dir %s: %w", toolsDir, err)
 	}
 
-	entries, err := os.ReadDir(sourceDir)
-	if err != nil {
-		return fmt.Errorf("read source tools dir %s: %w", sourceDir, err)
-	}
-	for _, entry := range entries {
-		src, err := filepath.Abs(filepath.Join(sourceDir, entry.Name()))
+	for _, dir := range toolsDirs {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return fmt.Errorf("resolve tool %s: %w", entry.Name(), err)
+			return fmt.Errorf("read source tools dir %s: %w", dir, err)
 		}
-		info, err := os.Stat(src)
-		if err != nil {
-			return fmt.Errorf("stat tool %s: %w", src, err)
-		}
-		if info.IsDir() || info.Mode()&0o111 == 0 {
-			continue
-		}
+		for _, entry := range entries {
+			src, err := filepath.Abs(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				return fmt.Errorf("resolve tool %s: %w", entry.Name(), err)
+			}
+			info, err := os.Stat(src)
+			if err != nil {
+				return fmt.Errorf("stat tool %s: %w", src, err)
+			}
+			if info.IsDir() || info.Mode()&0o111 == 0 {
+				continue
+			}
 
-		dst := filepath.Join(toolsDir, entry.Name())
-		// A crashed agent with the same pid can leave a stale link; replace it.
-		if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("clear stale tool link %s: %w", dst, err)
-		}
-		if err := os.Symlink(src, dst); err != nil {
-			return fmt.Errorf("link tool %s -> %s: %w", dst, src, err)
+			dst := filepath.Join(toolsDir, entry.Name())
+			// Also replaces a same-name link from an earlier dir, so the later dir wins.
+			// A crashed agent with the same pid can leave a stale link too.
+			if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("clear stale tool link %s: %w", dst, err)
+			}
+			if err := os.Symlink(src, dst); err != nil {
+				return fmt.Errorf("link tool %s -> %s: %w", dst, src, err)
+			}
 		}
 	}
 	return nil
