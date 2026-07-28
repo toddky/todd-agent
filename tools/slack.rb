@@ -9,8 +9,8 @@ require 'uri'
 # ==============================================================================
 # TOKEN
 # ==============================================================================
-# Read the Slack OAuth token from mcp_auth.json, resolved under
-# `$XDG_CONFIG_HOME/llm-agent` (with the standard `$HOME/.config` default).
+# Read the Slack OAuth token from mcp_auth.json.
+# Resolved under $XDG_CONFIG_HOME/llm-agent (default $HOME/.config).
 def get_slack_token
 	xdg = ENV.fetch('XDG_CONFIG_HOME', File.join(Dir.home, '.config'))
 	auth_file = File.join(xdg, 'llm-agent', 'mcp_auth.json')
