@@ -25,7 +25,7 @@ func printEvent(event agent.Event) {
 	case agent.EventTextDelta:
 		fmt.Print(event.Text)
 	case agent.EventToolCallStarted:
-		fmt.Fprintf(os.Stderr, "%s🔧 %s %s%s\n", gray, event.ToolName, event.ToolInput, reset)
+		fmt.Fprintf(os.Stderr, "\n%s🔧 %s %s%s\n", gray, event.ToolName, event.ToolInput, reset)
 	case agent.EventToolResult:
 		if event.IsError {
 			fmt.Fprintf(os.Stderr, "%s✗ %s%s\n", red, event.Result, reset)
