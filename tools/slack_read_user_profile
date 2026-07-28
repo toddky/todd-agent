@@ -1,0 +1,114 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'slack'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Read a Slack user profile: name, email, title, timezone, and status. Defaults to the current user if user_id is omitted. Input: {"user_id": "<U...>"}.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'user_id' => { 'type' => 'string', 'description' => 'Slack user ID (e.g. "U0ABC12345"); defaults to the current user if omitted' }
+			},
+			'required' => []
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "slack_read_user_profile: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+user_id = args['user_id']
+unless user_id.nil? || (user_id.is_a?(String) && !user_id.empty?)
+	warn 'slack_read_user_profile: "user_id" must be a non-empty string if present'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_slack_token
+rescue StandardError => e
+	warn "slack_read_user_profile: #{e.message}"
+	exit 1
+end
+
+# The raw users.info requires a user id, so resolve the token's own id via
+# auth.test when the caller omits one.
+if user_id.nil?
+	begin
+		whoami = slack_get('auth.test', {}, token)
+	rescue StandardError => e
+		warn "slack_read_user_profile: request failed: #{e.message}"
+		exit 1
+	end
+	unless whoami['ok']
+		warn "slack_read_user_profile: Slack error: #{whoami['error']}"
+		exit 1
+	end
+	user_id = whoami['user_id']
+end
+
+begin
+	result = slack_get('users.info', { 'user' => user_id }, token)
+rescue StandardError => e
+	warn "slack_read_user_profile: request failed: #{e.message}"
+	exit 1
+end
+
+unless result['ok']
+	warn "slack_read_user_profile: Slack error: #{result['error']}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+member = result['user'] || {}
+profile = member['profile'] || {}
+
+real_name = profile['real_name'].to_s
+real_name = member['real_name'].to_s if real_name.empty?
+
+lines = []
+lines.append("User: #{real_name} (#{member['id']})")
+lines.append("Username: #{member['name']}") unless member['name'].to_s.empty?
+lines.append("Display name: #{profile['display_name']}") unless profile['display_name'].to_s.empty?
+lines.append("Email: #{profile['email']}") unless profile['email'].to_s.empty?
+lines.append("Title: #{profile['title']}") unless profile['title'].to_s.empty?
+lines.append("Timezone: #{member['tz']} (#{member['tz_label']})") unless member['tz'].to_s.empty?
+
+status_parts = []
+status_parts.append(profile['status_emoji'].to_s) unless profile['status_emoji'].to_s.empty?
+status_parts.append(profile['status_text'].to_s) unless profile['status_text'].to_s.empty?
+lines.append("Status: #{status_parts.join(' ')}") unless status_parts.empty?
+
+flags = []
+flags.append('bot') if member['is_bot']
+flags.append('admin') if member['is_admin']
+flags.append('deleted') if member['deleted']
+lines.append("Flags: #{flags.join(', ')}") unless flags.empty?
+
+puts lines.join("\n")
