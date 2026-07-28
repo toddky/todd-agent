@@ -1,0 +1,210 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+require 'json'
+require 'net/http'
+require 'time'
+require 'uri'
+
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Read recent message history from a Slack conversation (public channel, private group, 1:1 DM, or group DM). Pass a channel_id, or a user_id to read that DM. Input: {"channel_id": "<id>", "limit": <1-100>, "oldest": "<ts>", "latest": "<ts>", "cursor": "<cursor>"}.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'channel_id' => { 'type' => 'string', 'description' => 'Channel, private group, IM, or group DM ID to read; a user_id also works to read that DM' },
+				'limit' => { 'type' => 'integer', 'description' => 'Number of messages to return, 1-100 (default 100)' },
+				'oldest' => { 'type' => 'string', 'description' => 'Start of the time range, Slack ts format (e.g. "1234567890.123456")' },
+				'latest' => { 'type' => 'string', 'description' => 'End of the time range, Slack ts format (e.g. "1234567890.123456")' },
+				'cursor' => { 'type' => 'string', 'description' => 'Pagination cursor from a previous response next_cursor' }
+			},
+			'required' => ['channel_id']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# TOKEN
+# ==============================================================================
+# Read the Slack OAuth token from mcp_auth.json, resolved under
+# `$XDG_CONFIG_HOME/llm-agent` (with the standard `$HOME/.config` default).
+def get_slack_token
+	xdg = ENV.fetch('XDG_CONFIG_HOME', File.join(Dir.home, '.config'))
+	auth_file = File.join(xdg, 'llm-agent', 'mcp_auth.json')
+	data = JSON.parse(File.read(auth_file))
+	key = data.keys.find { |candidate| candidate.start_with?('slack|') }
+	raise "no Slack token found in #{auth_file}" unless key
+	return data[key]['accessToken']
+end
+
+# ==============================================================================
+# HELPERS
+# ==============================================================================
+def slack_get(endpoint, params, token)
+	uri = URI("https://slack.com/api/#{endpoint}")
+	uri.query = URI.encode_www_form(params)
+	http = Net::HTTP.new(uri.host, uri.port)
+	http.use_ssl = true
+	request = Net::HTTP::Get.new(uri, 'Authorization' => "Bearer #{token}")
+	return JSON.parse(http.request(request).body)
+end
+
+# Local-machine time matches the MCP tool's rendering when the host tz is the
+# reader's tz. Format e.g. "2026-07-28 11:17:29 CDT".
+def format_ts(timestamp)
+	return Time.at(timestamp.to_f).strftime('%Y-%m-%d %H:%M:%S %Z')
+end
+
+# Header label: "#name" for a channel/group, "Group DM" for an mpim, "DM" for an im.
+def channel_label(channel_id, token)
+	info = slack_get('conversations.info', { 'channel' => channel_id }, token)
+	channel = info['channel'] || {}
+	return 'DM' if channel['is_im']
+	return 'Group DM' if channel['is_mpim']
+	name = channel['name'].to_s
+	return channel_id if name.empty?
+	return "##{name}"
+end
+
+# Resolve a user_id to [real_name, email], caching each lookup in the passed hash.
+def resolve_user(user_id, token, cache)
+	return cache[user_id] if cache.key?(user_id)
+	info = slack_get('users.info', { 'user' => user_id }, token)
+	member = info['user'] || {}
+	profile = member['profile'] || {}
+	real_name = profile['real_name'].to_s
+	real_name = member['real_name'].to_s if real_name.empty?
+	real_name = user_id if real_name.empty?
+	email = profile['email'].to_s
+	cache[user_id] = [real_name, email]
+	return cache[user_id]
+end
+
+# Build the "=== Message from ... ===" header line for one message.
+def sender_line(message, token, cache)
+	timestamp = message['ts']
+	time_str = format_ts(timestamp)
+
+	bot_profile = message['bot_profile']
+	if bot_profile
+		return "=== Message from #{bot_profile['name']} [bot] at #{time_str} === "
+	end
+
+	user_id = message['user'].to_s
+	if user_id.empty?
+		username = message['username'].to_s
+		label = username.empty? ? 'unknown' : username
+		return "=== Message from #{label} at #{time_str} === "
+	end
+
+	real_name, email = resolve_user(user_id, token, cache)
+	identity = email.empty? ? "#{real_name} (#{user_id})" : "#{real_name} <#{email}> (#{user_id})"
+	return "=== Message from #{identity} at #{time_str} === "
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "slack_read_channel: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+channel_id = args['channel_id']
+if !channel_id.is_a?(String) || channel_id.empty?
+	warn 'slack_read_channel: missing required non-empty string "channel_id" in JSON input; expected {"channel_id": "<id>", ...}'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_slack_token
+rescue StandardError => e
+	warn "slack_read_channel: #{e.message}"
+	exit 1
+end
+
+history_params = { 'channel' => channel_id }
+history_params['limit'] = args['limit'] if args['limit']
+history_params['oldest'] = args['oldest'] if args['oldest']
+history_params['latest'] = args['latest'] if args['latest']
+history_params['cursor'] = args['cursor'] if args['cursor']
+
+begin
+	result = slack_get('conversations.history', history_params, token)
+rescue StandardError => e
+	warn "slack_read_channel: request failed: #{e.message}"
+	exit 1
+end
+
+unless result['ok']
+	warn "slack_read_channel: Slack error: #{result['error']}"
+	exit 1
+end
+
+# ==============================================================================
+# FORMAT
+# ==============================================================================
+# conversations.history returns messages newest-first; keep that order to match
+# the MCP tool's rendering.
+messages = result['messages'] || []
+user_cache = {}
+
+begin
+	label = channel_label(channel_id, token)
+rescue StandardError
+	label = channel_id
+end
+
+lines = []
+lines.append("Channel: #{label} (#{channel_id})")
+lines.append('')
+
+messages.each do |message|
+	lines.append(sender_line(message, token, user_cache))
+	lines.append("Message TS: #{message['ts']}")
+	lines.append(message['text'].to_s)
+
+	reply_count = message['reply_count'].to_i
+	if reply_count > 0
+		noun = reply_count == 1 ? 'reply' : 'replies'
+		latest_reply = message['latest_reply']
+		if latest_reply
+			lines.append("Thread: #{reply_count} #{noun} (latest: #{format_ts(latest_reply)})")
+		else
+			lines.append("Thread: #{reply_count} #{noun}")
+		end
+	end
+
+	reactions = message['reactions'] || []
+	if reactions.any?
+		reaction_parts = []
+		reactions.each do |reaction|
+			reaction_parts.append("#{reaction['name']} (#{reaction['count']})")
+		end
+		lines.append("Reactions: #{reaction_parts.join('  ')}")
+	end
+
+	lines.append('')
+end
+
+next_cursor = result.dig('response_metadata', 'next_cursor').to_s
+lines.append("next_cursor: #{next_cursor}") unless next_cursor.empty?
+
+puts lines.join("\n")
