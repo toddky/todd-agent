@@ -1,0 +1,125 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+require 'json'
+require 'net/http'
+require 'uri'
+
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Send a message to a Slack conversation. Pass a channel_id (C.../G...), or a user_id (U...) to DM that user. The body parameter is "message", not "text". Input: {"channel_id": "<id>", "message": "<body>", "thread_ts": "<parent ts>", "reply_broadcast": <bool>}.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'channel_id' => { 'type' => 'string', 'description' => 'Channel ID (C.../G...) or a user ID (U...) to DM that user' },
+				'message' => { 'type' => 'string', 'description' => 'The message body (Slack mrkdwn supported)' },
+				'thread_ts' => { 'type' => 'string', 'description' => 'Parent message ts to reply in a thread (e.g. "1234567890.123456")' },
+				'reply_broadcast' => { 'type' => 'boolean', 'description' => 'When replying in a thread, also post the reply to the channel' }
+			},
+			'required' => ['channel_id', 'message']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# TOKEN
+# ==============================================================================
+# Read the Slack OAuth token from mcp_auth.json, resolved under
+# `$XDG_CONFIG_HOME/llm-agent` (with the standard `$HOME/.config` default).
+def get_slack_token
+	xdg = ENV.fetch('XDG_CONFIG_HOME', File.join(Dir.home, '.config'))
+	auth_file = File.join(xdg, 'llm-agent', 'mcp_auth.json')
+	data = JSON.parse(File.read(auth_file))
+	key = data.keys.find { |candidate| candidate.start_with?('slack|') }
+	raise "no Slack token found in #{auth_file}" unless key
+	return data[key]['accessToken']
+end
+
+# ==============================================================================
+# HELPERS
+# ==============================================================================
+def slack_post(endpoint, payload, token)
+	uri = URI("https://slack.com/api/#{endpoint}")
+	http = Net::HTTP.new(uri.host, uri.port)
+	http.use_ssl = true
+	request = Net::HTTP::Post.new(uri, 'Authorization' => "Bearer #{token}", 'Content-Type' => 'application/json')
+	request.body = payload.to_json
+	return JSON.parse(http.request(request).body)
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "slack_send_message: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+channel_id = args['channel_id']
+if !channel_id.is_a?(String) || channel_id.empty?
+	warn 'slack_send_message: missing required non-empty string "channel_id" in JSON input; expected {"channel_id": "<id>", "message": "<body>"}'
+	exit 2
+end
+
+message = args['message']
+if !message.is_a?(String) || message.empty?
+	warn 'slack_send_message: missing required non-empty string "message" in JSON input; the body parameter is "message", not "text"'
+	exit 2
+end
+
+# ==============================================================================
+# SEND
+# ==============================================================================
+begin
+	token = get_slack_token
+rescue StandardError => e
+	warn "slack_send_message: #{e.message}"
+	exit 1
+end
+
+payload = { 'channel' => channel_id, 'text' => message }
+payload['thread_ts'] = args['thread_ts'] if args['thread_ts']
+payload['reply_broadcast'] = args['reply_broadcast'] if args.key?('reply_broadcast')
+
+begin
+	result = slack_post('chat.postMessage', payload, token)
+rescue StandardError => e
+	warn "slack_send_message: request failed: #{e.message}"
+	exit 1
+end
+
+unless result['ok']
+	warn "slack_send_message: Slack error: #{result['error']}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+sent_channel = result['channel'].to_s
+sent_ts = result['ts'].to_s
+permalink_ts = sent_ts.delete('.')
+
+lines = []
+lines.append("sent to #{sent_channel} at ts #{sent_ts}")
+unless sent_channel.empty? || permalink_ts.empty?
+	link = "https://tenstorrent.slack.com/archives/#{sent_channel}/p#{permalink_ts}"
+	link = "#{link}?thread_ts=#{args['thread_ts']}" if args['thread_ts']
+	lines.append(link)
+end
+
+puts lines.join("\n")
