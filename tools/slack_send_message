@@ -6,13 +6,12 @@
 #   1 = runtime failure
 #   2 = malformed call (bad arguments)
 
+require 'json'
+require_relative 'slack'
+
 # ==============================================================================
 # SCHEMA
 # ==============================================================================
-require 'json'
-require 'net/http'
-require 'uri'
-
 if ARGV[0] == '--schema'
 	schema = {
 		'description' => 'Send a message to a Slack conversation. Pass a channel_id (C.../G...), or a user_id (U...) to DM that user. The body parameter is "message", not "text". Input: {"channel_id": "<id>", "message": "<body>", "thread_ts": "<parent ts>", "reply_broadcast": <bool>}.',
@@ -30,32 +29,6 @@ if ARGV[0] == '--schema'
 	}
 	puts JSON.pretty_generate(schema)
 	exit 0
-end
-
-# ==============================================================================
-# TOKEN
-# ==============================================================================
-# Read the Slack OAuth token from mcp_auth.json, resolved under
-# `$XDG_CONFIG_HOME/llm-agent` (with the standard `$HOME/.config` default).
-def get_slack_token
-	xdg = ENV.fetch('XDG_CONFIG_HOME', File.join(Dir.home, '.config'))
-	auth_file = File.join(xdg, 'llm-agent', 'mcp_auth.json')
-	data = JSON.parse(File.read(auth_file))
-	key = data.keys.find { |candidate| candidate.start_with?('slack|') }
-	raise "no Slack token found in #{auth_file}" unless key
-	return data[key]['accessToken']
-end
-
-# ==============================================================================
-# HELPERS
-# ==============================================================================
-def slack_post(endpoint, payload, token)
-	uri = URI("https://slack.com/api/#{endpoint}")
-	http = Net::HTTP.new(uri.host, uri.port)
-	http.use_ssl = true
-	request = Net::HTTP::Post.new(uri, 'Authorization' => "Bearer #{token}", 'Content-Type' => 'application/json')
-	request.body = payload.to_json
-	return JSON.parse(http.request(request).body)
 end
 
 # ==============================================================================
