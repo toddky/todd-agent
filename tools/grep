@@ -49,8 +49,12 @@ if [[ -n "$context" && ! "$context" =~ ^[0-9]+$ ]]; then
 	echo "grep: \"context\" must be a non-negative integer; got: $context" 1>&2
 	exit 2
 fi
-# Read timeout_secs from our own schema so the value has a single source of truth.
-search_timeout="$("$0" --schema | jq -r '.timeout_secs')"
+# Self-time to the caller's timeout_secs, falling back to our schema default.
+# The agent's hard kill is this value plus a grace, so timing out here yields partial results first.
+search_timeout="$(jq -r '.timeout_secs // empty' <<< "$input_json")"
+if [[ -z "$search_timeout" ]]; then
+	search_timeout="$("$0" --schema | jq -r '.timeout_secs')"
+fi
 
 
 # ==============================================================================
