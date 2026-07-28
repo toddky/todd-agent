@@ -6,13 +6,12 @@
 #   1 = runtime failure
 #   2 = malformed call (bad arguments)
 
+require 'json'
+require_relative 'glean'
+
 # ==============================================================================
 # SCHEMA
 # ==============================================================================
-require 'json'
-require 'net/http'
-require 'uri'
-
 if ARGV[0] == '--schema'
 	schema = {
 		'description' => 'Read the extracted text of documents already indexed by Glean (Confluence, Google Drive, GitLab, etc.) by their URLs. Only serves URLs in Glean\'s index, not arbitrary web pages. Input: {"urls": ["<url>", ...]}.',
@@ -31,20 +30,6 @@ if ARGV[0] == '--schema'
 	}
 	puts JSON.pretty_generate(schema)
 	exit 0
-end
-
-# ==============================================================================
-# TOKEN
-# ==============================================================================
-# Read the Glean OAuth token from mcp_auth.json, resolved under
-# `$XDG_CONFIG_HOME/llm-agent` (with the standard `$HOME/.config` default).
-def get_glean_auth
-	xdg = ENV.fetch('XDG_CONFIG_HOME', File.join(Dir.home, '.config'))
-	auth_file = File.join(xdg, 'llm-agent', 'mcp_auth.json')
-	data = JSON.parse(File.read(auth_file))
-	key = data.keys.find { |candidate| candidate.start_with?('glean|') }
-	raise "no Glean token found in #{auth_file}" unless key
-	return data[key]
 end
 
 # ==============================================================================
@@ -74,21 +59,11 @@ rescue StandardError => e
 	exit 1
 end
 
-# The MCP server URL is "https://<host>/mcp/gleen"; the REST getdocuments API
-# lives on the same host (same OAuth token, different endpoint).
-mcp_uri = URI.parse(auth['serverUrl'])
-docs_uri = URI.parse("https://#{mcp_uri.host}/rest/api/v1/getdocuments")
-
 document_specs = urls.map { |url| { 'url' => url } }
 payload = { 'documentSpecs' => document_specs, 'includeFields' => ['DOCUMENT_CONTENT'] }
 
-http = Net::HTTP.new(docs_uri.host, docs_uri.port)
-http.use_ssl = true
-request = Net::HTTP::Post.new(docs_uri, 'Authorization' => "Bearer #{auth['accessToken']}", 'Content-Type' => 'application/json')
-request.body = payload.to_json
-
 begin
-	response = http.request(request)
+	response = glean_post(auth, 'getdocuments', payload)
 rescue StandardError => e
 	warn "glean_read_document: request failed: #{e.message}"
 	exit 1
