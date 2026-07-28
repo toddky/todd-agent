@@ -213,3 +213,66 @@ sleep 10
 		t.Errorf("Run() took %v, timeout was not enforced", elapsed)
 	}
 }
+
+func TestRunTimeoutSecsOverridesDefault(t *testing.T) {
+	dir := t.TempDir()
+	// Declared default is 60s; the call requests 1s, which must win so the sleep is cut short.
+	writeTool(t, dir, "slow_tool", `if [[ "${1:-}" == "--schema" ]]; then
+	echo '{"description": "d", "input_schema": {"type": "object"}, "timeout_secs": 60}'
+	exit 0
+fi
+sleep 30
+`)
+	registry, err := LoadAll(dir)
+	if err != nil {
+		t.Fatalf("LoadAll() error: %v", err)
+	}
+
+	start := time.Now()
+	_, err = registry.Run("slow_tool", json.RawMessage(`{"timeout_secs": 1}`))
+	elapsed := time.Since(start)
+
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("Run() error = %v, want timeout error", err)
+	}
+	// 9s: above the requested 1s + 5s grace + 1s WaitDelay, well below the tool's 60s default and 30s sleep.
+	if elapsed > 9*time.Second {
+		t.Errorf("Run() took %v, requested timeout_secs was not applied", elapsed)
+	}
+}
+
+func TestRunRejectsNonPositiveTimeoutSecs(t *testing.T) {
+	dir := t.TempDir()
+	writeTool(t, dir, "echo_tool", echoTool)
+	registry, err := LoadAll(dir)
+	if err != nil {
+		t.Fatalf("LoadAll() error: %v", err)
+	}
+
+	if _, err := registry.Run("echo_tool", json.RawMessage(`{"timeout_secs": 0}`)); err == nil {
+		t.Error("Run() accepted timeout_secs of 0")
+	}
+}
+
+func TestDefinitionsInjectsTimeoutProperty(t *testing.T) {
+	dir := t.TempDir()
+	writeTool(t, dir, "echo_tool", echoTool)
+	registry, err := LoadAll(dir)
+	if err != nil {
+		t.Fatalf("LoadAll() error: %v", err)
+	}
+
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("Definitions() returned %d defs, want 1", len(defs))
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(defs[0].InputSchema, &schema); err != nil {
+		t.Fatalf("advertised schema is not valid JSON: %v", err)
+	}
+	if _, ok := schema.Properties["timeout_secs"]; !ok {
+		t.Errorf("advertised schema missing injected timeout_secs; got %s", defs[0].InputSchema)
+	}
+}
