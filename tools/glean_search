@@ -6,13 +6,12 @@
 #   1 = runtime failure
 #   2 = malformed call (bad arguments)
 
+require 'json'
+require_relative 'glean'
+
 # ==============================================================================
 # SCHEMA
 # ==============================================================================
-require 'json'
-require 'net/http'
-require 'uri'
-
 if ARGV[0] == '--schema'
 	schema = {
 		'description' => 'Send a message to Glean Assistant chat and return its reply. Input: {"message": "<question>", "context": ["<optional prior message>", ...]}.',
@@ -33,21 +32,6 @@ if ARGV[0] == '--schema'
 	puts JSON.pretty_generate(schema)
 	exit 0
 end
-
-# ==============================================================================
-# TOKEN
-# ==============================================================================
-# Read the Glean OAuth token from mcp_auth.json, resolved under
-# `$XDG_CONFIG_HOME/llm-agent` (with the standard `$HOME/.config` default).
-def get_glean_auth
-	xdg = ENV.fetch('XDG_CONFIG_HOME', File.join(Dir.home, '.config'))
-	auth_file = File.join(xdg, 'llm-agent', 'mcp_auth.json')
-	data = JSON.parse(File.read(auth_file))
-	key = data.keys.find { |candidate| candidate.start_with?('glean|') }
-	raise "no Glean token found in #{auth_file}" unless key
-	return data[key]
-end
-
 
 # ==============================================================================
 # PARSE
@@ -72,14 +56,6 @@ unless context.is_a?(Array) && context.all? { |item| item.is_a?(String) }
 	exit 2
 end
 
-# Self-time to the caller's timeout_secs, falling back to our schema default of 60.
-# Ruby's socket timeout fires before the agent's hard kill, so we exit cleanly not SIGKILL'd.
-request_timeout = args.fetch('timeout_secs', 60)
-unless request_timeout.is_a?(Integer) && request_timeout >= 1
-	warn 'glean_search: "timeout_secs" must be a positive integer if present'
-	exit 2
-end
-
 # ==============================================================================
 # REQUEST
 # ==============================================================================
@@ -90,28 +66,12 @@ rescue StandardError => e
 	exit 1
 end
 
-# The MCP server URL is "https://<host>/mcp/gleen"; the REST chat API lives on
-# the same host under "/rest/api/v1/chat" (same OAuth token, different endpoint).
-mcp_uri = URI.parse(auth['serverUrl'])
-chat_uri = URI.parse("https://#{mcp_uri.host}/rest/api/v1/chat")
-
 messages = context.map { |text| { 'author' => 'USER', 'fragments' => [{ 'text' => text }] } }
 messages << { 'author' => 'USER', 'fragments' => [{ 'text' => message }] }
-
 payload = { 'messages' => messages, 'stream' => false }
 
-http = Net::HTTP.new(chat_uri.host, chat_uri.port)
-http.use_ssl = true
-http.open_timeout = request_timeout
-http.read_timeout = request_timeout
-request = Net::HTTP::Post.new(chat_uri, 'Authorization' => "Bearer #{auth['accessToken']}", 'Content-Type' => 'application/json')
-request.body = payload.to_json
-
 begin
-	response = http.request(request)
-rescue Net::OpenTimeout, Net::ReadTimeout
-	warn "glean_search: Glean did not respond within #{request_timeout}s; raise timeout_secs or narrow the question"
-	exit 1
+	response = glean_post(auth, 'chat', payload)
 rescue StandardError => e
 	warn "glean_search: request failed: #{e.message}"
 	exit 1
