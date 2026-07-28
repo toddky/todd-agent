@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'slack'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Find Slack users whose name, display name, or email contains the query. Returns user IDs for DMing. Input: {"query": "<name or email>", "limit": <1-100>}.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'query' => { 'type' => 'string', 'description' => 'Substring to match against real name, display name, or email (case-insensitive)' },
+				'limit' => { 'type' => 'integer', 'description' => 'Max matches to return (default 20)' }
+			},
+			'required' => ['query']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "slack_search_users: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+query = args['query']
+if !query.is_a?(String) || query.empty?
+	warn 'slack_search_users: missing required non-empty string "query" in JSON input; expected {"query": "<name or email>"}'
+	exit 2
+end
+
+limit = args.fetch('limit', 20)
+needle = query.downcase
+
+# ==============================================================================
+# SEARCH
+# ==============================================================================
+# Slack has no non-deprecated user-search endpoint, so paginate users.list and
+# filter profiles client-side like the user lookup does.
+begin
+	token = get_slack_token
+rescue StandardError => e
+	warn "slack_search_users: #{e.message}"
+	exit 1
+end
+
+matches = []
+cursor = nil
+loop do
+	params = { 'limit' => 200 }
+	params['cursor'] = cursor if cursor
+
+	begin
+		result = slack_get('users.list', params, token)
+	rescue StandardError => e
+		warn "slack_search_users: request failed: #{e.message}"
+		exit 1
+	end
+
+	unless result['ok']
+		warn "slack_search_users: Slack error: #{result['error']}"
+		exit 1
+	end
+
+	members = result['members'] || []
+	members.each do |member|
+		next if member['deleted']
+		profile = member['profile'] || {}
+		haystack = [member['name'], member['real_name'], profile['real_name'], profile['display_name'], profile['email']]
+		joined = haystack.compact.join(' ').downcase
+		matches.append(member) if joined.include?(needle)
+	end
+
+	break if matches.length >= limit
+	cursor = result.dig('response_metadata', 'next_cursor').to_s
+	break if cursor.empty?
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+matches = matches.first(limit)
+if matches.empty?
+	puts "no users matching \"#{query}\""
+	exit 0
+end
+
+lines = []
+lines.append("#{matches.length} user(s) matching \"#{query}\":")
+matches.each do |member|
+	user_id = member['id'].to_s
+	profile = member['profile'] || {}
+	real_name = profile['real_name'].to_s
+	real_name = member['real_name'].to_s if real_name.empty?
+	email = profile['email'].to_s
+	display_name = profile['display_name'].to_s
+	title = profile['title'].to_s
+
+	line = real_name.empty? ? "- #{user_id}" : "- #{real_name} (#{user_id})"
+	line = "#{line} <#{email}>" unless email.empty?
+	line = "#{line} @#{display_name}" unless display_name.empty?
+	line = "#{line} — #{title}" unless title.empty?
+	lines.append(line)
+end
+
+puts lines.join("\n")
