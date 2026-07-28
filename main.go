@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/toddky/todd-agent/internal/agent"
@@ -24,6 +25,21 @@ func (s *stringList) String() string {
 func (s *stringList) Set(value string) error {
 	*s = append(*s, value)
 	return nil
+}
+
+// bundledDir resolves a repo-relative dir (e.g. "tools", "agents/x"), preferring the copy next to the binary.
+// It falls back to the current directory for `go run`, where the binary lives in a temp dir.
+func bundledDir(relative string) (string, bool) {
+	if executable, err := os.Executable(); err == nil {
+		beside := filepath.Join(filepath.Dir(executable), relative)
+		if _, err := os.Stat(beside); err == nil {
+			return beside, true
+		}
+	}
+	if _, err := os.Stat(relative); err == nil {
+		return relative, true
+	}
+	return "", false
 }
 
 // Exit codes:
@@ -47,11 +63,32 @@ func run() (int, error) {
 	promptFile := flag.String("prompt-file", "", "file whose contents become the first prompt; --prompt wins if both are set")
 	oneshotMode := flag.Bool("oneshot", false, "answer the first prompt in a single turn and exit (requires --prompt or --prompt-file)")
 	allowExit := flag.Bool("allow-exit", false, "advertise an internal exit tool so the model can end the agent with any exit code")
+	agentName := flag.String("agent", "", "load a bundled agent from agents/<name>: its tools/ (as --tools-dir), prompt.md (as --prompt-file), and system_prompts/*.md (as --system-prompt-file)")
 	var toolsDirs stringList
 	flag.Var(&toolsDirs, "tools-dir", "tools directory to load; repeatable, later dirs win on name collisions (default: tools/ next to the binary)")
 	var systemPromptFiles stringList
 	flag.Var(&systemPromptFiles, "system-prompt-file", "file appended to the system prompt; repeatable, joined in flag order")
 	flag.Parse()
+
+	// --agent expands to the primitive flags: tools/ and system_prompts/*.md append to their flags.
+	// Its prompt.md fills --prompt-file only when the user gave no explicit prompt, so a prompt replaces it.
+	if *agentName != "" {
+		agentDir, found := bundledDir(filepath.Join("agents", *agentName))
+		if !found {
+			return 3, fmt.Errorf("--agent %q: no such agent under agents/", *agentName)
+		}
+		toolsDirs = append(toolsDirs, filepath.Join(agentDir, "tools"))
+		systemPromptGlob := filepath.Join(agentDir, "system_prompts", "*.md")
+		matches, err := filepath.Glob(systemPromptGlob)
+		if err != nil {
+			return 3, fmt.Errorf("glob %s: %w", systemPromptGlob, err)
+		}
+		sort.Strings(matches)
+		systemPromptFiles = append(systemPromptFiles, matches...)
+		if *prompt == "" && *promptFile == "" {
+			*promptFile = filepath.Join(agentDir, "prompt.md")
+		}
+	}
 
 	if *prompt == "" && *promptFile != "" {
 		content, err := os.ReadFile(*promptFile)
@@ -97,19 +134,15 @@ func run() (int, error) {
 		model = "claude-sonnet-5"
 	}
 
-	// Without --tools-dir, use the default tools dir next to the binary.
-	// With it, only the named dirs load, so an agent's tool set can be restricted.
+	// Without --tools-dir (and no --agent that added one), use the default tools
+	// dir next to the binary. With either, only the named dirs load, so an
+	// agent's tool set can be restricted.
 	if len(toolsDirs) == 0 {
-		executable, err := os.Executable()
-		if err != nil {
-			return 3, fmt.Errorf("locate executable to find tools dir: %w", err)
+		defaultTools, found := bundledDir("tools")
+		if !found {
+			return 3, fmt.Errorf("no tools dir found next to the binary or in the current directory")
 		}
-		sourceTools := filepath.Join(filepath.Dir(executable), "tools")
-		if _, err := os.Stat(sourceTools); err != nil {
-			// `go run` puts the binary in a temp dir; fall back to ./tools.
-			sourceTools = "tools"
-		}
-		toolsDirs = []string{sourceTools}
+		toolsDirs = []string{defaultTools}
 	}
 
 	if err := agent.Setup(toolsDirs...); err != nil {
