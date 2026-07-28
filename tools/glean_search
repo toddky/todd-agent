@@ -56,6 +56,16 @@ unless context.is_a?(Array) && context.all? { |item| item.is_a?(String) }
 	exit 2
 end
 
+# Self-time below the agent's deadline so a slow Glean query exits cleanly with
+# an actionable message instead of a generic hard kill. The agent kills at
+# timeout_secs + 5s grace; subtract 2s so Ruby's socket fires first with margin.
+deadline = args.fetch('timeout_secs', 60)
+unless deadline.is_a?(Integer) && deadline >= 1
+	warn 'glean_search: "timeout_secs" must be a positive integer if present'
+	exit 2
+end
+socket_timeout = [deadline - 2, 1].max
+
 # ==============================================================================
 # REQUEST
 # ==============================================================================
@@ -71,7 +81,10 @@ messages << { 'author' => 'USER', 'fragments' => [{ 'text' => message }] }
 payload = { 'messages' => messages, 'stream' => false }
 
 begin
-	response = glean_post(auth, 'chat', payload)
+	response = glean_post(auth, 'chat', payload, timeout: socket_timeout)
+rescue Net::OpenTimeout, Net::ReadTimeout
+	warn "glean_search: Glean did not respond within #{socket_timeout}s; raise timeout_secs or narrow the question"
+	exit 1
 rescue StandardError => e
 	warn "glean_search: request failed: #{e.message}"
 	exit 1
