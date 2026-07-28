@@ -84,8 +84,8 @@ end
 # ==============================================================================
 # RESULTS
 # ==============================================================================
-# getdocuments keys its result by URL; each entry is either a document with
-# content.fullTextList, or {"error": "..."} for an unmatched/unindexed URL.
+# getdocuments keys its result by URL.
+# Each entry is a document with content.fullTextList, or {"error": ...}.
 documents = result['documents'] || {}
 
 sections = []
