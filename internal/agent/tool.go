@@ -26,6 +26,10 @@ const defaultToolTimeout = 10 * time.Second
 // The 5s grace lets a tool exit cleanly before the agent force-kills it.
 const graceTimeout = 5 * time.Second
 
+// maxToolTimeout caps a model-requested timeout_secs so a bad call can't wedge the
+// agent for hours. 600s (10m) is a guess: longer than any tool here should need.
+const maxToolTimeout = 600 * time.Second
+
 // schemaTimeout caps how long a tool may take to answer --schema during
 // discovery. 5s: discovery runs across every tool at startup, so a hung
 // script must not stall the session for long.
@@ -153,10 +157,34 @@ func (r *Registry) Definitions() []llm.ToolDef {
 		defs = append(defs, llm.ToolDef{
 			Name:        tool.Name,
 			Description: tool.Description,
-			InputSchema: tool.InputSchema,
+			InputSchema: withTimeoutProperty(tool.InputSchema, tool.Timeout),
 		})
 	}
 	return defs
+}
+
+// withTimeoutProperty advertises an optional "timeout_secs" integer so the model can override the per-call deadline.
+// The registry injects it uniformly rather than each tool declaring it, adding a "properties" object if none exists.
+func withTimeoutProperty(schema json.RawMessage, defaultTimeout time.Duration) json.RawMessage {
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		return schema
+	}
+	// A missing "properties" starts empty so the field still lands on a bare object schema.
+	props := map[string]json.RawMessage{}
+	if properties, ok := parsed["properties"]; ok {
+		if err := json.Unmarshal(properties, &props); err != nil {
+			return schema
+		}
+	}
+	description := fmt.Sprintf(
+		"Optional seconds before this call is killed; defaults to %d, max %d. The tool self-times below the deadline for a graceful partial result.",
+		int(defaultTimeout.Seconds()), int(maxToolTimeout.Seconds()))
+	// These marshals cannot fail: every value is a string or an already-valid schema fragment.
+	props["timeout_secs"], _ = json.Marshal(map[string]string{"type": "integer", "description": description})
+	parsed["properties"], _ = json.Marshal(props)
+	rebuilt, _ := json.Marshal(parsed)
+	return rebuilt
 }
 
 // Tool script exit-code contract: 0 = success (stdout is the result),
@@ -169,8 +197,7 @@ const (
 )
 
 // Run executes a tool with the JSON input on stdin and returns its stdout.
-// The agent enforces the timeout here, around the exec, so tools never time themselves out.
-// The deadline is the tool's declared timeout plus graceTimeout.
+// The agent hard-kills at the resolved timeout plus graceTimeout; the tool reads the same timeout_secs to self-time first.
 func (r *Registry) Run(name string, input json.RawMessage) (string, error) {
 	tool, known := r.Tools[name]
 	if !known {
@@ -180,8 +207,25 @@ func (r *Registry) Run(name string, input json.RawMessage) (string, error) {
 		input = json.RawMessage("{}")
 	}
 
+	// The model can override the deadline via timeout_secs in the input, else the tool's default applies.
+	// The tool reads the same field to self-time below the deadline.
+	timeout := tool.Timeout
+	var requested struct {
+		TimeoutSecs *int `json:"timeout_secs"`
+	}
+	if err := json.Unmarshal(input, &requested); err == nil && requested.TimeoutSecs != nil {
+		seconds := *requested.TimeoutSecs
+		if seconds < 1 {
+			return "", fmt.Errorf("tool %s: timeout_secs must be at least 1, got %d", name, seconds)
+		}
+		timeout = time.Duration(seconds) * time.Second
+		if timeout > maxToolTimeout {
+			timeout = maxToolTimeout
+		}
+	}
+
 	// The deadline adds graceTimeout so a tool has room to exit cleanly before this hard kill.
-	ctx, cancel := context.WithTimeout(context.Background(), tool.Timeout+graceTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+graceTimeout)
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
