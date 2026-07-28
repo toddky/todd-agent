@@ -1,0 +1,140 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+require 'json'
+require 'net/http'
+require 'uri'
+
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Read the extracted text of documents already indexed by Glean (Confluence, Google Drive, GitLab, etc.) by their URLs. Only serves URLs in Glean\'s index, not arbitrary web pages. Input: {"urls": ["<url>", ...]}.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'urls' => {
+					'type' => 'array',
+					'items' => { 'type' => 'string' },
+					'description' => 'One or more URLs of Glean-indexed documents to read'
+				}
+			},
+			'required' => ['urls']
+		},
+		'timeout_secs' => 60
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# TOKEN
+# ==============================================================================
+# Read the Glean OAuth token from mcp_auth.json, resolved under
+# `$XDG_CONFIG_HOME/llm-agent` (with the standard `$HOME/.config` default).
+def get_glean_auth
+	xdg = ENV.fetch('XDG_CONFIG_HOME', File.join(Dir.home, '.config'))
+	auth_file = File.join(xdg, 'llm-agent', 'mcp_auth.json')
+	data = JSON.parse(File.read(auth_file))
+	key = data.keys.find { |candidate| candidate.start_with?('glean|') }
+	raise "no Glean token found in #{auth_file}" unless key
+	return data[key]
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "glean_read_document: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+urls = args['urls']
+unless urls.is_a?(Array) && !urls.empty? && urls.all? { |url| url.is_a?(String) && !url.empty? }
+	warn 'glean_read_document: missing required non-empty string array "urls" in JSON input; expected {"urls": ["<url>", ...]}'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	auth = get_glean_auth
+rescue StandardError => e
+	warn "glean_read_document: #{e.message}"
+	exit 1
+end
+
+# The MCP server URL is "https://<host>/mcp/gleen"; the REST getdocuments API
+# lives on the same host (same OAuth token, different endpoint).
+mcp_uri = URI.parse(auth['serverUrl'])
+docs_uri = URI.parse("https://#{mcp_uri.host}/rest/api/v1/getdocuments")
+
+document_specs = urls.map { |url| { 'url' => url } }
+payload = { 'documentSpecs' => document_specs, 'includeFields' => ['DOCUMENT_CONTENT'] }
+
+http = Net::HTTP.new(docs_uri.host, docs_uri.port)
+http.use_ssl = true
+request = Net::HTTP::Post.new(docs_uri, 'Authorization' => "Bearer #{auth['accessToken']}", 'Content-Type' => 'application/json')
+request.body = payload.to_json
+
+begin
+	response = http.request(request)
+rescue StandardError => e
+	warn "glean_read_document: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "glean_read_document: Glean API returned #{response.code}: #{response.body}"
+	exit 1
+end
+
+begin
+	result = JSON.parse(response.body)
+rescue JSON::ParserError => e
+	warn "glean_read_document: could not parse Glean response as JSON: #{e.message}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+# getdocuments keys its result by URL; each entry is either a document with
+# content.fullTextList, or {"error": "..."} for an unmatched/unindexed URL.
+documents = result['documents'] || {}
+
+sections = []
+any_content = false
+urls.each do |url|
+	document = documents[url] || {}
+	error = document['error']
+	if error
+		sections.append("=== #{url} ===\n(error: #{error})")
+		next
+	end
+	full_text_list = document.dig('content', 'fullTextList') || []
+	text = full_text_list.join("\n")
+	if text.empty?
+		sections.append("=== #{url} ===\n(no content)")
+		next
+	end
+	any_content = true
+	sections.append("=== #{url} ===\n#{text}")
+end
+
+unless any_content
+	warn "glean_read_document: no document content returned: #{response.body}"
+	exit 1
+end
+
+puts sections.join("\n\n")
