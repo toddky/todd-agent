@@ -96,8 +96,8 @@ end
 # ==============================================================================
 # FORMAT
 # ==============================================================================
-# conversations.replies returns the parent first, then replies in chronological
-# order. Split them to match the MCP tool's parent/replies layout.
+# conversations.replies returns the parent first, then replies chronologically.
+# Split them to match the MCP tool's parent/replies layout.
 messages = result['messages'] || []
 if messages.empty?
 	warn "slack_read_thread: no messages returned for #{channel_id} ts #{message_ts}"
