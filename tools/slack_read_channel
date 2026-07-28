@@ -100,8 +100,7 @@ end
 # ==============================================================================
 # FORMAT
 # ==============================================================================
-# conversations.history returns messages newest-first; keep that order to match
-# the MCP tool's rendering.
+# conversations.history returns newest-first; keep that order to match the MCP tool.
 messages = result['messages'] || []
 user_cache = {}
 
