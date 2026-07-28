@@ -86,7 +86,8 @@ Every script in `tools/` must follow this contract (see `tools/read_file` for th
 
 - `--schema` as the first argument prints a JSON self-description and exits 0. The object has
   `description`, `input_schema` (JSON Schema for the call arguments), and an optional `timeout_secs`
-  (the agent applies a default when it is omitted). The registry discovers tools by running `--schema` across `tools/*`.
+  (the default deadline; the agent applies its own default when it is omitted). The registry discovers tools by running `--schema` across `tools/*`.
+  The registry injects an optional `timeout_secs` integer into every advertised `input_schema`, so the model can override the per-call deadline; tool authors do not declare it.
 - A normal call receives JSON arguments on stdin and writes its result text to stdout.
 - Failure reasons go to stderr, never stdout.
 - Exit codes: `0` = success, `1` = runtime failure (e.g. file not found), `2` = malformed call (bad or missing arguments).
@@ -100,7 +101,7 @@ Conventions the current tools follow beyond the hard contract:
 - Scripts are organized with SCHEMA / PARSE / MAIN / RESULTS section header banners.
 - Path inputs are expanded with Python's `expanduser`/`expandvars`, never a shell reparse.
 - Search tools (`grep`, `glob`) cap output at 200 lines/paths (`max_results`) and tell the model to narrow when truncated.
-- A long-running tool self-times by wrapping its work in `timeout`, reading its own `timeout_secs` back from `--schema` so the value has one source of truth; it then prints partial results with a note instead of being killed. The wrapper is skipped if the budget is under 1s.
+- A long-running tool self-times by wrapping its work in `timeout`, reading the call's `timeout_secs` from its input and falling back to its `--schema` default; it then prints partial results with a note instead of being killed. The wrapper is skipped if the budget is under 1s.
 - `rg` is preferred and runs with `--no-ignore` so it does not honor .gitignore (it still skips hidden files, including .git); the fallback (`find`, `grep -rn`) sees everything including hidden files, so results can still differ between hosts.
 - `list_dir` always includes dotfiles: the consumer is a model, and hiding .gitignore/.github/etc would misrepresent the directory.
 - `edit_file` requires each `old_text` to match exactly once; edits apply in order against the evolving content.
