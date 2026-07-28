@@ -43,7 +43,7 @@ Each subdirectory under `agents/` is a self-contained agent definition, named af
 
 ```text
 agents/
-└── disk_cleanup/
+└── disk-cleaner/
     ├── tools/
     │   ├── list_dir            # symlink to the top-level tools/list_dir
     │   ├── list_dir_with_size  # list a directory with per-entry disk usage
