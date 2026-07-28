@@ -1,0 +1,121 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'slack'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Find Slack channels whose name contains the query. Searches public and private channels by default. Input: {"query": "<substring>", "channel_types": "public_channel,private_channel", "limit": <1-100>, "include_archived": <bool>}.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'query' => { 'type' => 'string', 'description' => 'Substring to match against channel names (case-insensitive)' },
+				'channel_types' => { 'type' => 'string', 'description' => 'Comma-separated types to include; defaults to "public_channel,private_channel"' },
+				'limit' => { 'type' => 'integer', 'description' => 'Max matches to return (default 20)' },
+				'include_archived' => { 'type' => 'boolean', 'description' => 'Include archived channels (default false)' }
+			},
+			'required' => ['query']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "slack_search_channels: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+query = args['query']
+if !query.is_a?(String) || query.empty?
+	warn 'slack_search_channels: missing required non-empty string "query" in JSON input; expected {"query": "<substring>"}'
+	exit 2
+end
+
+channel_types = args.fetch('channel_types', 'public_channel,private_channel')
+limit = args.fetch('limit', 20)
+include_archived = args.fetch('include_archived', false)
+needle = query.downcase
+
+# ==============================================================================
+# SEARCH
+# ==============================================================================
+# Slack has no non-deprecated channel-search endpoint, so paginate
+# conversations.list and filter names client-side like the user lookup does.
+begin
+	token = get_slack_token
+rescue StandardError => e
+	warn "slack_search_channels: #{e.message}"
+	exit 1
+end
+
+matches = []
+cursor = nil
+loop do
+	params = { 'types' => channel_types, 'limit' => 1000, 'exclude_archived' => !include_archived }
+	params['cursor'] = cursor if cursor
+
+	begin
+		result = slack_get('conversations.list', params, token)
+	rescue StandardError => e
+		warn "slack_search_channels: request failed: #{e.message}"
+		exit 1
+	end
+
+	unless result['ok']
+		warn "slack_search_channels: Slack error: #{result['error']}"
+		exit 1
+	end
+
+	channels = result['channels'] || []
+	channels.each do |channel|
+		name = channel['name'].to_s
+		matches.append(channel) if name.downcase.include?(needle)
+	end
+
+	break if matches.length >= limit
+	cursor = result.dig('response_metadata', 'next_cursor').to_s
+	break if cursor.empty?
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+matches = matches.first(limit)
+if matches.empty?
+	puts "no channels matching \"#{query}\""
+	exit 0
+end
+
+lines = []
+lines.append("#{matches.length} channel(s) matching \"#{query}\":")
+matches.each do |channel|
+	name = channel['name'].to_s
+	channel_id = channel['id'].to_s
+	tags = []
+	tags.append('private') if channel['is_private']
+	tags.append('archived') if channel['is_archived']
+	suffix = tags.empty? ? '' : " [#{tags.join(', ')}]"
+	purpose = channel.dig('purpose', 'value').to_s
+	line = "- ##{name} (#{channel_id})#{suffix}"
+	line = "#{line} — #{purpose}" unless purpose.empty?
+	lines.append(line)
+end
+
+puts lines.join("\n")
