@@ -56,9 +56,8 @@ unless context.is_a?(Array) && context.all? { |item| item.is_a?(String) }
 	exit 2
 end
 
-# Self-time below the agent's deadline so a slow Glean query exits cleanly with
-# an actionable message instead of a generic hard kill. The agent kills at
-# timeout_secs + 5s grace; subtract 2s so Ruby's socket fires first with margin.
+# Self-time below the agent deadline so a slow query exits with a clear message.
+# Agent kills at timeout_secs + 5s; subtract 2s so the socket fires first.
 deadline = args.fetch('timeout_secs', 60)
 unless deadline.is_a?(Integer) && deadline >= 1
 	warn 'glean_search: "timeout_secs" must be a positive integer if present'
