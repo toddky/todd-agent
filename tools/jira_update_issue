@@ -1,0 +1,109 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'jira'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Edit fields on an existing Jira issue. Input: {"key": "<issue key>", "summary": "<text>", "description": "<wiki markup>", "priority": "<name>", "labels": ["a","b"], "assignee": "<accountId or null>", "extra_fields": {...}}. key is required; pass at least one field to change. Set assignee to null to unassign. Use Jira wiki markup in the description. extra_fields is merged last for custom fields. Returns a success line (the API returns no body on update).',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'key' => { 'type' => 'string', 'description' => 'Issue key to edit, e.g. "HWINFRA-585"' },
+				'summary' => { 'type' => 'string', 'description' => 'New summary' },
+				'description' => { 'type' => 'string', 'description' => 'New description in Jira wiki markup' },
+				'priority' => { 'type' => 'string', 'description' => 'New priority name' },
+				'labels' => { 'type' => 'array', 'items' => { 'type' => 'string' }, 'description' => 'Replacement label set' },
+				'assignee' => { 'type' => %w[string null], 'description' => 'Assignee accountId, or null to unassign' },
+				'extra_fields' => { 'type' => 'object', 'description' => 'Additional raw fields merged last, e.g. custom fields' }
+			},
+			'required' => %w[key]
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "jira_update_issue: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+key = args['key']
+if !key.is_a?(String) || key.empty?
+	warn 'jira_update_issue: missing required non-empty string "key" in JSON input; expected {"key": "HWINFRA-585", ...}'
+	exit 2
+end
+
+extra_fields = args['extra_fields']
+if !extra_fields.nil? && !extra_fields.is_a?(Hash)
+	warn "jira_update_issue: \"extra_fields\" must be a JSON object; got #{extra_fields.class}"
+	exit 2
+end
+
+# ==============================================================================
+# BUILD
+# ==============================================================================
+# The tool builds the nested field shapes so the caller passes flat values.
+fields = {}
+fields['summary'] = args['summary'] if args['summary']
+fields['description'] = args['description'] if args['description']
+fields['priority'] = { 'name' => args['priority'] } if args['priority']
+fields['labels'] = args['labels'] if args['labels']
+# assignee is present-vs-absent, not truthy: an explicit null unassigns.
+if args.key?('assignee')
+	assignee = args['assignee']
+	fields['assignee'] = assignee.nil? ? nil : { 'accountId' => assignee }
+end
+# extra_fields is merged last so an explicit raw field wins over a built one.
+fields.merge!(extra_fields) if extra_fields
+
+if fields.empty?
+	warn 'jira_update_issue: nothing to change; pass at least one of summary, description, priority, labels, assignee, or extra_fields'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_jira_token()
+rescue StandardError => e
+	warn "jira_update_issue: #{e.message}"
+	exit 1
+end
+
+begin
+	response = jira_request('PUT', "issue/#{key}", token, { 'fields' => fields })
+rescue StandardError => e
+	warn "jira_update_issue: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "jira_update_issue: Jira returned HTTP #{response.code} for #{key}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+# A successful update returns 204 with no body.
+puts "Updated #{key}: #{fields.keys.join(', ')}"
+puts "URL: https://tenstorrent.atlassian.net/browse/#{key}"
