@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'slack'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Show the Slack account that owns the current API token: user id, name, team, and URL. Takes no input; pass {} or nothing.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {}
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_slack_token()
+rescue StandardError => e
+	warn "slack_whoami: #{e.message}"
+	exit 1
+end
+
+# auth.test returns the token owner's identity; users.info fills in the profile.
+begin
+	auth = slack_get('auth.test', {}, token)
+rescue StandardError => e
+	warn "slack_whoami: request failed: #{e.message}"
+	exit 1
+end
+
+unless auth['ok']
+	warn "slack_whoami: Slack error: #{auth['error']}"
+	exit 1
+end
+
+user_id = auth['user_id'].to_s
+user_cache = {}
+real_name, email = resolve_user(user_id, token, user_cache)
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+lines = []
+lines.append("User ID: #{user_id}")
+lines.append("Name: #{real_name}")
+lines.append("Email: #{email}") unless email.empty?
+lines.append("Handle: #{auth['user']}")
+lines.append("Team: #{auth['team']} (#{auth['team_id']})")
+lines.append("URL: #{auth['url']}")
+
+puts lines.join("\n")
