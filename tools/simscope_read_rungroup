@@ -1,0 +1,89 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'simscope'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Read all regressions in a Simscope rungroup. A rungroup is a set of regressions submitted together (e.g. "all+2052551" submits several test-suite runs at once). A rungroup name is NOT a valid single-regression name, so use this instead of simscope_read_regression for names like "all+2052551". Simscope is a test triage and regression management system. Input: {"rungroup": "<name>"}, e.g. {"rungroup": "all+2052551"}.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'rungroup' => { 'type' => 'string', 'description' => 'Rungroup name, e.g. "all+2052551"' }
+			},
+			'required' => ['rungroup']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "simscope_read_rungroup: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+rungroup = args['rungroup']
+if !rungroup.is_a?(String) || rungroup.empty?
+	warn 'simscope_read_rungroup: missing required non-empty string "rungroup" in JSON input; expected {"rungroup": "all+2052551"}'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_simscope_token()
+rescue StandardError => e
+	warn "simscope_read_rungroup: #{e.message}"
+	exit 1
+end
+
+begin
+	response = simscope_get('r/', token, { 'rungroup' => rungroup })
+	regressions = simscope_parse(response)
+rescue StandardError => e
+	warn "simscope_read_rungroup: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "simscope_read_rungroup: Simscope returned HTTP #{response.code} for #{rungroup}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+regressions = [] unless regressions.is_a?(Array)
+
+lines = []
+lines.append("Rungroup: #{rungroup}")
+lines.append("#{regressions.length} regression(s)")
+lines.append('')
+
+regressions.each do |regression|
+	stats = regression['stats'] || {}
+	lines.append("Name: #{regression['name']}")
+	lines.append("  Pending: #{regression['pending'] ? 'yes' : 'no'}")
+	lines.append("  Passed: #{stats['passed']}  Failed: #{stats['failed']}  Jobs: #{stats['jobs']}")
+	lines.append('')
+end
+
+puts lines.join("\n")
