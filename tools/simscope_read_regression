@@ -1,0 +1,99 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'simscope'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Read one Simscope regression (a single test-suite run) by name: component, model, pass/fail stats, and signature counts. Simscope is a test triage and regression management system. Input: {"name": "<regression name>"}, e.g. {"name": "fe_tb:vcs+2308407"}. Note: a rungroup name like "all+2052551" is NOT a valid regression name; those need a rungroup query instead.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'name' => { 'type' => 'string', 'description' => 'Regression name, e.g. "fe_tb:vcs+2308407". Pass the bare regression name, not a component-prefixed form.' }
+			},
+			'required' => ['name']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "simscope_read_regression: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+name = args['name']
+if !name.is_a?(String) || name.empty?
+	warn 'simscope_read_regression: missing required non-empty string "name" in JSON input; expected {"name": "fe_tb:vcs+2308407"}'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_simscope_token()
+rescue StandardError => e
+	warn "simscope_read_regression: #{e.message}"
+	exit 1
+end
+
+begin
+	response = simscope_get("r/#{name}", token)
+	regression = simscope_parse(response)
+rescue StandardError => e
+	warn "simscope_read_regression: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "simscope_read_regression: Simscope returned HTTP #{response.code} for #{name}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+regression = {} unless regression.is_a?(Hash)
+stats = regression['stats'] || {}
+
+lines = []
+lines.append("Name: #{regression['name']}")
+lines.append("ID: #{regression['id']}")
+lines.append("Group: #{regression['group']}")
+lines.append("Component ID: #{regression['component_id']}")
+lines.append("Model version: #{regression['model_version']}")
+lines.append("Model branch: #{regression['model_branch']}")
+lines.append("Queue: #{regression['queue']}")
+lines.append("User ID: #{regression['userid']}")
+lines.append("Pending: #{regression['pending'] ? 'yes' : 'no'}")
+lines.append('')
+lines.append('=== STATS ===')
+lines.append("Jobs: #{stats['jobs']}")
+lines.append("Passed: #{stats['passed']}")
+lines.append("Failed: #{stats['failed']}")
+
+signatures = regression['signatures']
+if signatures.is_a?(Array)
+	lines.append('')
+	lines.append("=== SIGNATURES (#{signatures.length} total) ===")
+end
+
+puts lines.join("\n")
