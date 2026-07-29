@@ -1,0 +1,110 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'jira'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Move a Jira issue to a new status. Input: {"key": "<issue key>", "transition": "<id or status name>", "comment": "<optional wiki markup>"}. transition may be a numeric transition id or a target status name (e.g. "Done"); names are matched case-insensitively against the valid transitions for this issue. A comment, if given, is posted as part of the transition.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'key' => { 'type' => 'string', 'description' => 'Issue key to transition, e.g. "HWINFRA-585"' },
+				'transition' => { 'type' => 'string', 'description' => 'Transition id (e.g. "41") or target status name (e.g. "Done", "In Progress")' },
+				'comment' => { 'type' => 'string', 'description' => 'Optional comment in Jira wiki markup, posted with the transition' }
+			},
+			'required' => %w[key transition]
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "jira_transition_issue: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+key = args['key']
+if !key.is_a?(String) || key.empty?
+	warn 'jira_transition_issue: missing required non-empty string "key" in JSON input; expected {"key": "HWINFRA-585", "transition": "Done"}'
+	exit 2
+end
+
+transition = args['transition']
+if !transition.is_a?(String) || transition.empty?
+	warn 'jira_transition_issue: missing required non-empty string "transition" in JSON input; a transition id or target status name'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_jira_token()
+rescue StandardError => e
+	warn "jira_transition_issue: #{e.message}"
+	exit 1
+end
+
+# A numeric transition is used as-is; a name is resolved against the issue's
+# valid transitions, since transition ids are per-workflow and not stable.
+transition_id = transition
+unless transition =~ /\A\d+\z/
+	begin
+		list_response = jira_request('GET', "issue/#{key}/transitions", token)
+	rescue StandardError => e
+		warn "jira_transition_issue: transition lookup failed: #{e.message}"
+		exit 1
+	end
+	unless list_response.is_a?(Net::HTTPSuccess)
+		warn "jira_transition_issue: Jira returned HTTP #{list_response.code} listing transitions for #{key}: #{list_response.body}"
+		exit 1
+	end
+	transitions = (JSON.parse(list_response.body)['transitions'] || [])
+	match = transitions.find { |candidate| candidate.dig('to', 'name').to_s.casecmp?(transition) || candidate['name'].to_s.casecmp?(transition) }
+	if match.nil?
+		available = transitions.map { |candidate| "#{candidate['name']} -> #{candidate.dig('to', 'name')}" }.join('; ')
+		warn "jira_transition_issue: no transition to \"#{transition}\" available for #{key}. Valid: #{available}"
+		exit 2
+	end
+	transition_id = match['id']
+end
+
+payload = { 'transition' => { 'id' => transition_id.to_s } }
+payload['update'] = { 'comment' => [{ 'add' => { 'body' => args['comment'] } }] } if args['comment']
+
+begin
+	response = jira_request('POST', "issue/#{key}/transitions", token, payload)
+rescue StandardError => e
+	warn "jira_transition_issue: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "jira_transition_issue: Jira returned HTTP #{response.code} for #{key}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+# A successful transition returns 204 with no body.
+puts "Transitioned #{key} via transition #{transition_id}"
+puts "URL: https://tenstorrent.atlassian.net/browse/#{key}"
