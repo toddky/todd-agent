@@ -64,7 +64,11 @@ rescue StandardError => e
 	exit 1
 end
 
-payload = { 'channel' => channel_id, 'text' => message }
+# A markdown block renders standard markdown natively: tables, fenced code with language highlighting, headers, lists.
+# The text field is only the notification fallback, so it gets the mrkdwn-converted body.
+payload = { 'channel' => channel_id, 'text' => markdown_to_mrkdwn(message) }
+# Slack caps cumulative markdown-block text at 12000 chars; above that the plain text field is the only body.
+payload['blocks'] = [{ 'type' => 'markdown', 'text' => message }] if message.length <= 12000
 payload['thread_ts'] = args['thread_ts'] if args['thread_ts']
 payload['reply_broadcast'] = args['reply_broadcast'] if args.key?('reply_broadcast')
 
