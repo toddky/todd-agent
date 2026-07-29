@@ -20,7 +20,7 @@ JIRA_USER = 'tyamakawa@tenstorrent.com'.freeze
 # TOKEN
 # ==============================================================================
 # Read the Jira API token from ~/.jira.apitoken, matching tt-curl-jira.
-def get_jira_token
+def get_jira_token()
 	token_file = File.join(Dir.home, '.jira.apitoken')
 	raise "no Jira API token found at #{token_file}" unless File.file?(token_file)
 	return File.read(token_file).strip
