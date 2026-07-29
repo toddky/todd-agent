@@ -1,0 +1,101 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'jira'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Raw Jira REST v2 write passthrough for POST and PUT only. The endpoint is relative to /rest/api/2/. Input: {"method": "POST"|"PUT", "endpoint": "<endpoint>", "body": <object or string>}, e.g. {"method": "POST", "endpoint": "issue/HWINFRA-585/comment", "body": {"body": "hello"}}. Use Jira wiki markup in description/comment bodies. GET is not allowed here (use jira_api_read); DELETE is not supported at all.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'method' => { 'type' => 'string', 'enum' => %w[POST PUT], 'description' => 'HTTP method: POST to create, PUT to update' },
+				'endpoint' => { 'type' => 'string', 'description' => 'REST v2 endpoint relative to /rest/api/2/, e.g. "issue" or "issue/HWINFRA-585/comment"' },
+				'body' => { 'type' => ['object', 'string'], 'description' => 'Request body as a JSON object (or a raw JSON string), e.g. {"fields": {"summary": "new"}}' }
+			},
+			'required' => ['method', 'endpoint', 'body']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "jira_api_write: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+method = args['method'].to_s.upcase
+unless %w[POST PUT].include?(method)
+	warn "jira_api_write: \"method\" must be POST or PUT; got #{args['method'].inspect}. Use jira_api_read for GET; DELETE is not supported."
+	exit 2
+end
+
+endpoint = args['endpoint']
+if !endpoint.is_a?(String) || endpoint.empty?
+	warn 'jira_api_write: missing required non-empty string "endpoint" in JSON input; expected {"method": "POST", "endpoint": "issue", "body": {...}}'
+	exit 2
+end
+
+unless args.key?('body')
+	warn 'jira_api_write: missing required "body" in JSON input; expected a JSON object or string'
+	exit 2
+end
+body = args['body']
+if !body.is_a?(Hash) && !body.is_a?(String)
+	warn "jira_api_write: \"body\" must be a JSON object or string; got #{body.class}"
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_jira_token
+rescue StandardError => e
+	warn "jira_api_write: #{e.message}"
+	exit 1
+end
+
+begin
+	response = jira_request(method, endpoint, token, body)
+rescue StandardError => e
+	warn "jira_api_write: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "jira_api_write: Jira returned HTTP #{response.code} for #{method} #{endpoint}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+# A successful write may return the created/updated resource or an empty body.
+body_text = response.body.to_s
+if body_text.empty?
+	puts "#{method} #{endpoint}: HTTP #{response.code} (no body)"
+else
+	begin
+		puts JSON.pretty_generate(JSON.parse(body_text))
+	rescue JSON::ParserError
+		puts body_text
+	end
+end
