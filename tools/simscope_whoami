@@ -1,0 +1,65 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'simscope'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Show the Simscope account that owns the current API token: uid, login, name, email, and admin/manager flags. Simscope is a test triage and regression management system. Takes no input; pass {} or nothing.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {}
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_simscope_token()
+rescue StandardError => e
+	warn "simscope_whoami: #{e.message}"
+	exit 1
+end
+
+# config/whoami returns the account that owns the current API token.
+begin
+	response = simscope_get('config/whoami', token)
+	me = simscope_parse(response)
+rescue StandardError => e
+	warn "simscope_whoami: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "simscope_whoami: Simscope returned HTTP #{response.code}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+me = {} unless me.is_a?(Hash)
+
+lines = []
+lines.append("UID: #{me['uid']}")
+lines.append("Login: #{me['login']}")
+lines.append("Name: #{me['name']}")
+lines.append("Email: #{me['email']}")
+lines.append("Admin: #{me['admin'] ? 'yes' : 'no'}")
+lines.append("Manager: #{me['manager'] ? 'yes' : 'no'}")
+
+puts lines.join("\n")
