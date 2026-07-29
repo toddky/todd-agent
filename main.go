@@ -64,11 +64,34 @@ func run() (int, error) {
 	oneshotMode := flag.Bool("oneshot", false, "answer the first prompt in a single turn and exit (requires --prompt or --prompt-file)")
 	allowExit := flag.Bool("allow-exit", false, "advertise an internal exit tool so the model can end the agent with any exit code")
 	agentName := flag.String("agent", "", "load a bundled agent from agents/<name>: its tools/ (as --tools-dir), prompt.md (as --prompt-file), and system_prompts/*.md (as --system-prompt-file)")
+	listAgents := flag.Bool("list-agents", false, "print the names of bundled agents under agents/ and exit")
 	var toolsDirs stringList
 	flag.Var(&toolsDirs, "tools-dir", "tools directory to load; repeatable, later dirs win on name collisions (default: tools/ next to the binary)")
 	var systemPromptFiles stringList
 	flag.Var(&systemPromptFiles, "system-prompt-file", "file appended to the system prompt; repeatable, joined in flag order")
 	flag.Parse()
+
+	if *listAgents {
+		agentsDir, found := bundledDir("agents")
+		if !found {
+			return 3, fmt.Errorf("no agents dir found next to the binary or in the current directory")
+		}
+		entries, err := os.ReadDir(agentsDir)
+		if err != nil {
+			return 3, fmt.Errorf("read agents dir: %w", err)
+		}
+		var names []string
+		for _, entry := range entries {
+			if entry.IsDir() {
+				names = append(names, entry.Name())
+			}
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Println(name)
+		}
+		return 0, nil
+	}
 
 	// --agent expands to the primitive flags: tools/ and system_prompts/*.md append to their flags.
 	// Its prompt.md fills --prompt-file only when the user gave no explicit prompt, so a prompt replaces it.
