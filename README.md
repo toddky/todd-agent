@@ -9,6 +9,7 @@ directly with `net/http`; no external SDK.
 - An Anthropic API key (or a litellm-compatible proxy)
 - `jq` (used by tool scripts to parse their JSON input)
 - `python3` (optional; expands `~` and env vars in tool paths)
+- `ruby` (used by the Slack and Glean tool scripts)
 
 ## Build
 
