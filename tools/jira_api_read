@@ -1,0 +1,79 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'jira'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Raw read-only Jira REST v2 GET passthrough. The endpoint is relative to /rest/api/2/. Input: {"endpoint": "<endpoint>"}, e.g. {"endpoint": "issue/HWINFRA-585?fields=status,summary"} or {"endpoint": "search/jql?jql=<url-encoded>&maxResults=20"}. Returns the raw response body (pretty-printed when JSON). GET only; writes and deletes are not possible through this tool.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'endpoint' => { 'type' => 'string', 'description' => 'REST v2 endpoint relative to /rest/api/2/, e.g. "issue/HWINFRA-585" or "search/jql?jql=..."' }
+			},
+			'required' => ['endpoint']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "jira_api_read: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+endpoint = args['endpoint']
+if !endpoint.is_a?(String) || endpoint.empty?
+	warn 'jira_api_read: missing required non-empty string "endpoint" in JSON input; expected {"endpoint": "issue/HWINFRA-585"}'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_jira_token
+rescue StandardError => e
+	warn "jira_api_read: #{e.message}"
+	exit 1
+end
+
+begin
+	response = jira_request('GET', endpoint, token)
+rescue StandardError => e
+	warn "jira_api_read: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "jira_api_read: Jira returned HTTP #{response.code} for #{endpoint}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+# Pretty-print when the body parses as JSON; otherwise pass it through as-is.
+body = response.body.to_s
+begin
+	puts JSON.pretty_generate(JSON.parse(body))
+rescue JSON::ParserError
+	puts body
+end
