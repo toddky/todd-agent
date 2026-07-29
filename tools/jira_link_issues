@@ -1,0 +1,96 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'jira'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Link two Jira issues. Input: {"inward": "<issue key>", "outward": "<issue key>", "type": "<link type name>", "comment": "<optional wiki markup>"}. The link type name (e.g. "Blocks", "Relates", "Duplicate") sets the direction: the outward issue <type> the inward issue (e.g. outward "Blocks" inward). Returns a success line (the API returns no body).',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'inward' => { 'type' => 'string', 'description' => 'Inward issue key, the target of the link, e.g. "HWINFRA-585"' },
+				'outward' => { 'type' => 'string', 'description' => 'Outward issue key, the source of the link, e.g. "HWINFRA-570"' },
+				'type' => { 'type' => 'string', 'description' => 'Link type name, e.g. "Blocks", "Relates", "Duplicate", "Cloners"' },
+				'comment' => { 'type' => 'string', 'description' => 'Optional comment in Jira wiki markup, added with the link' }
+			},
+			'required' => %w[inward outward type]
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "jira_link_issues: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+inward = args['inward']
+if !inward.is_a?(String) || inward.empty?
+	warn 'jira_link_issues: missing required non-empty string "inward" in JSON input; expected {"inward": "HWINFRA-585", "outward": "HWINFRA-570", "type": "Blocks"}'
+	exit 2
+end
+
+outward = args['outward']
+if !outward.is_a?(String) || outward.empty?
+	warn 'jira_link_issues: missing required non-empty string "outward" in JSON input'
+	exit 2
+end
+
+link_type = args['type']
+if !link_type.is_a?(String) || link_type.empty?
+	warn 'jira_link_issues: missing required non-empty string "type" in JSON input; e.g. "Blocks", "Relates", "Duplicate"'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_jira_token()
+rescue StandardError => e
+	warn "jira_link_issues: #{e.message}"
+	exit 1
+end
+
+payload = {
+	'type' => { 'name' => link_type },
+	'inwardIssue' => { 'key' => inward },
+	'outwardIssue' => { 'key' => outward }
+}
+payload['comment'] = { 'body' => args['comment'] } if args['comment']
+
+begin
+	response = jira_request('POST', 'issueLink', token, payload)
+rescue StandardError => e
+	warn "jira_link_issues: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "jira_link_issues: Jira returned HTTP #{response.code} linking #{outward} #{link_type} #{inward}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+# A successful link returns 201 with no body.
+puts "Linked: #{outward} #{link_type} #{inward}"
