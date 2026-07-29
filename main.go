@@ -85,7 +85,7 @@ func run() (int, error) {
 		}
 		sort.Strings(matches)
 		systemPromptFiles = append(systemPromptFiles, matches...)
-		if *prompt == "" && *promptFile == "" {
+		if *oneshotMode && *prompt == "" && *promptFile == "" {
 			*promptFile = filepath.Join(agentDir, "prompt.md")
 		}
 	}
