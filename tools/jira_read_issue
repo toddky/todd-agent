@@ -1,0 +1,114 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'jira'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Read a Jira issue: status, summary, assignee, reporter, priority, description, and recent comments. Input: {"key": "<issue key>"}, e.g. {"key": "HWINFRA-585"}.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'key' => { 'type' => 'string', 'description' => 'Issue key, e.g. "HWINFRA-585"' }
+			},
+			'required' => ['key']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "jira_read_issue: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+key = args['key']
+if !key.is_a?(String) || key.empty?
+	warn 'jira_read_issue: missing required non-empty string "key" in JSON input; expected {"key": "HWINFRA-585"}'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_jira_token
+rescue StandardError => e
+	warn "jira_read_issue: #{e.message}"
+	exit 1
+end
+
+# Fetch everything needed for a status report in one call, matching the skill's guidance.
+fields = 'status,summary,assignee,reporter,priority,description,comment,created,updated'
+endpoint = "issue/#{key}?fields=#{fields}"
+
+begin
+	response = jira_request('GET', endpoint, token)
+rescue StandardError => e
+	warn "jira_read_issue: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "jira_read_issue: Jira returned HTTP #{response.code} for #{key}: #{response.body}"
+	exit 1
+end
+
+begin
+	issue = JSON.parse(response.body)
+rescue JSON::ParserError => e
+	warn "jira_read_issue: response is not valid JSON: #{e.message}"
+	exit 1
+end
+
+# ==============================================================================
+# FORMAT
+# ==============================================================================
+issue_fields = issue['fields'] || {}
+
+lines = []
+lines.append("Key: #{issue['key']}")
+lines.append("URL: https://tenstorrent.atlassian.net/browse/#{issue['key']}")
+lines.append("Summary: #{issue_fields.dig('summary')}")
+lines.append("Status: #{issue_fields.dig('status', 'name')}")
+lines.append("Priority: #{issue_fields.dig('priority', 'name')}")
+lines.append("Assignee: #{jira_user_identity(issue_fields['assignee'])}")
+lines.append("Reporter: #{jira_user_identity(issue_fields['reporter'])}")
+lines.append("Created: #{format_jira_time(issue_fields['created'])}")
+lines.append("Updated: #{format_jira_time(issue_fields['updated'])}")
+
+description = issue_fields['description'].to_s
+lines.append('')
+lines.append('=== DESCRIPTION ===')
+lines.append(description.empty? ? '(none)' : description)
+
+comments = issue_fields.dig('comment', 'comments') || []
+lines.append('')
+lines.append("=== COMMENTS (#{comments.length} total) ===")
+comments.each_with_index do |comment, index|
+	author = jira_user_identity(comment['author'])
+	lines.append('')
+	lines.append("--- Comment #{index + 1} of #{comments.length} ---")
+	lines.append("From: #{author}")
+	lines.append("Time: #{format_jira_time(comment['created'])}")
+	lines.append(comment['body'].to_s)
+end
+
+puts lines.join("\n")
