@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Run the LSF bjobs command and return its output. Input: {\"args\": [\"-u\", \"all\"], \"limit\": <max lines>}. args is an array passed to bjobs verbatim (no shell reparse); omit it to list your own jobs. bjobs can print many rows, so output is capped at 10 lines by default; raise \"limit\" (or set it to 0) for more. When capped, a note reports the total line count.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "args": {"type": "array", "items": {"type": "string"}, "description": "Arguments passed to bjobs verbatim, e.g. [\"-u\", \"all\", \"-q\", \"bbl-smoke\"]"},
+      "limit": {"type": "integer", "description": "Max output lines to return (default 10); 0 means no cap"}
+    }
+  },
+  "timeout_secs": 30
+}
+SCHEMA
+	exit 0
+fi
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json="$(cat)"
+if ! jq -e . >/dev/null 2>&1 <<< "$input_json"; then
+	echo "bjobs: input is not valid JSON" 1>&2
+	exit 2
+fi
+
+# args must be absent, null, or an array of strings; anything else is malformed.
+args_type="$(jq -r '.args | type' <<< "$input_json")"
+if [[ "$args_type" != "null" && "$args_type" != "array" ]]; then
+	echo 'bjobs: "args" must be an array of strings, e.g. {"args": ["-u", "all"]}' 1>&2
+	exit 2
+fi
+if [[ "$args_type" == "array" ]] && jq -e '[.args[] | type] | any(. != "string")' >/dev/null <<< "$input_json"; then
+	echo 'bjobs: "args" must be an array of strings, e.g. {"args": ["-u", "all"]}' 1>&2
+	exit 2
+fi
+
+# 10 lines is a small default because bjobs can return hundreds of rows.
+limit="$(jq -r '.limit // 10' <<< "$input_json")"
+if [[ ! "$limit" =~ ^[0-9]+$ ]]; then
+	echo "bjobs: \"limit\" must be a non-negative integer; got: $limit" 1>&2
+	exit 2
+fi
+
+
+# ==============================================================================
+# RUN
+# ==============================================================================
+# Read the JSON array NUL-delimited into a bash array so an element with spaces,
+# globs, or shell metacharacters stays one argument. bjobs receives it as argv,
+# so no value is reparsed by a shell.
+bjobs_args=()
+if [[ "$args_type" == "array" ]]; then
+	mapfile -t -d '' bjobs_args < <(jq -j '.args[] | (. + "\u0000")' <<< "$input_json")
+fi
+
+if ! command -v bjobs > /dev/null 2>&1; then
+	echo "bjobs: command not found on PATH" 1>&2
+	exit 1
+fi
+
+output="$(bjobs "${bjobs_args[@]}" 2>&1)"
+run_status=$?
+if (( run_status != 0 )); then
+	echo "bjobs: exited $run_status: $output" 1>&2
+	exit 1
+fi
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+total_count="$(wc -l <<< "$output")"
+if (( limit == 0 || total_count <= limit )); then
+	printf '%s\n' "$output"
+else
+	head -n "$limit" <<< "$output"
+	echo "... truncated: showing $limit of $total_count lines; raise \"limit\" or narrow the bjobs args"
+fi
