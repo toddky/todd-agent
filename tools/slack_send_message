@@ -68,7 +68,13 @@ end
 # The text field is only the notification fallback, so it gets the mrkdwn-converted body.
 payload = { 'channel' => channel_id, 'text' => markdown_to_mrkdwn(message) }
 # Slack caps cumulative markdown-block text at 12000 chars; above that the plain text field is the only body.
-payload['blocks'] = [{ 'type' => 'markdown', 'text' => message }] if message.length <= 12000
+# The context block is the "Sent using @LLM-Agent" footer; U0B1JFFRGKG is the LLM-Agent bot user.
+if message.length <= 12000
+	payload['blocks'] = [
+		{ 'type' => 'markdown', 'text' => message },
+		{ 'type' => 'context', 'elements' => [{ 'type' => 'mrkdwn', 'text' => 'Sent using <@U0B1JFFRGKG>' }] }
+	]
+end
 payload['thread_ts'] = args['thread_ts'] if args['thread_ts']
 payload['reply_broadcast'] = args['reply_broadcast'] if args.key?('reply_broadcast')
 
