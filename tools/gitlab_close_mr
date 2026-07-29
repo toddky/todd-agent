@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'gitlab'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Close or reopen a GitLab merge request. Input: {"project": "<id or path>", "iid": <mr iid>, "action": "close"|"reopen"}. action defaults to "close". This is a thin wrapper over the MR PUT endpoint with state_event.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'project' => { 'type' => 'string', 'description' => 'Project numeric id (e.g. "505") or path (e.g. "riscv/riscv_cluster")' },
+				'iid' => { 'type' => 'integer', 'description' => 'Merge request iid (the !NNN number)' },
+				'action' => { 'type' => 'string', 'enum' => %w[close reopen], 'description' => 'close (default) or reopen' }
+			},
+			'required' => ['project', 'iid']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "gitlab_close_mr: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+project = args['project']
+if !project.is_a?(String) || project.empty?
+	warn 'gitlab_close_mr: missing required non-empty string "project" in JSON input'
+	exit 2
+end
+
+iid = args['iid']
+unless iid.is_a?(Integer)
+	warn 'gitlab_close_mr: missing required integer "iid" in JSON input'
+	exit 2
+end
+
+action = args.key?('action') ? args['action'] : 'close'
+unless %w[close reopen].include?(action)
+	warn "gitlab_close_mr: \"action\" must be close or reopen; got #{action.inspect}"
+	exit 2
+end
+state_event = action == 'reopen' ? 'reopen' : 'close'
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_gitlab_token()
+rescue StandardError => e
+	warn "gitlab_close_mr: #{e.message}"
+	exit 1
+end
+
+endpoint = "projects/#{gitlab_project(project)}/merge_requests/#{iid}"
+begin
+	response = gitlab_request('PUT', endpoint, token, { 'state_event' => state_event })
+rescue StandardError => e
+	warn "gitlab_close_mr: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "gitlab_close_mr: GitLab returned HTTP #{response.code} for !#{iid}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+mr = JSON.parse(response.body)
+puts "MR !#{mr['iid']} is now #{mr['state']}: #{mr['web_url']}"
