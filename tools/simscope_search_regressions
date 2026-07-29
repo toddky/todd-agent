@@ -1,0 +1,95 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'simscope'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Search Simscope regressions (test-suite runs) with optional filters. Simscope is a test triage and regression management system. Input: {"runtag": "<tag prefix>", "component": "<name>", "branch": "<model branch>", "days": <int>, "limit": <int>}, all optional. Use "runtag" (NOT "tag") to filter by regression tag, e.g. {"runtag": "tt-regress", "component": "bbl:fe_tb:vcs", "days": 14, "limit": 10}. Returns matching regressions with name, group, and pass/fail stats.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'runtag' => { 'type' => 'string', 'description' => 'Regression tag prefix to filter by, e.g. "tt-regress" or "official.ci". Use this, not "tag".' },
+				'component' => { 'type' => 'string', 'description' => 'Component name to filter by, e.g. "bbl:fe_tb:vcs". Pair with runtag when targeting a specific block.' },
+				'branch' => { 'type' => 'string', 'description' => 'Model branch name to filter by' },
+				'days' => { 'type' => 'integer', 'description' => 'Only include regressions from the last N days' },
+				'limit' => { 'type' => 'integer', 'description' => 'Maximum number of regressions to return' }
+			}
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "simscope_search_regressions: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+# All filters are optional; collect the ones that were provided.
+params = {}
+params['runtag'] = args['runtag'] if args['runtag']
+params['component'] = args['component'] if args['component']
+params['branch'] = args['branch'] if args['branch']
+params['days'] = args['days'] if args['days']
+params['limit'] = args['limit'] if args['limit']
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_simscope_token()
+rescue StandardError => e
+	warn "simscope_search_regressions: #{e.message}"
+	exit 1
+end
+
+begin
+	response = simscope_get('r/', token, params)
+	regressions = simscope_parse(response)
+rescue StandardError => e
+	warn "simscope_search_regressions: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "simscope_search_regressions: Simscope returned HTTP #{response.code}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+regressions = [] unless regressions.is_a?(Array)
+
+lines = []
+lines.append("Matched #{regressions.length} regression(s)")
+lines.append('')
+
+regressions.each do |regression|
+	stats = regression['stats'] || {}
+	lines.append("Name: #{regression['name']}")
+	lines.append("  Group: #{regression['group']}")
+	lines.append("  Branch: #{regression['model_branch']}")
+	lines.append("  Pending: #{regression['pending'] ? 'yes' : 'no'}")
+	lines.append("  Passed: #{stats['passed']}  Failed: #{stats['failed']}  Jobs: #{stats['jobs']}")
+	lines.append('')
+end
+
+puts lines.join("\n")
