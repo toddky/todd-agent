@@ -59,7 +59,7 @@ needle = query.downcase
 # Slack has no non-deprecated channel-search endpoint, so paginate
 # conversations.list and filter names client-side like the user lookup does.
 begin
-	token = get_slack_token
+	token = get_slack_token()
 rescue StandardError => e
 	warn "slack_search_channels: #{e.message}"
 	exit 1

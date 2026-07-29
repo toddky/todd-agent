@@ -73,7 +73,7 @@ end
 # REQUEST
 # ==============================================================================
 begin
-	token = get_slack_token
+	token = get_slack_token()
 rescue StandardError => e
 	warn "slack_read_channel: #{e.message}"
 	exit 1

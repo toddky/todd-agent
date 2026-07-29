@@ -55,7 +55,7 @@ needle = query.downcase
 # Slack has no non-deprecated user-search endpoint, so paginate users.list and
 # filter profiles client-side like the user lookup does.
 begin
-	token = get_slack_token
+	token = get_slack_token()
 rescue StandardError => e
 	warn "slack_search_users: #{e.message}"
 	exit 1

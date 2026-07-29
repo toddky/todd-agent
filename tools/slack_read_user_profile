@@ -49,7 +49,7 @@ end
 # REQUEST
 # ==============================================================================
 begin
-	token = get_slack_token
+	token = get_slack_token()
 rescue StandardError => e
 	warn "slack_read_user_profile: #{e.message}"
 	exit 1

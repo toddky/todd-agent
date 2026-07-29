@@ -49,7 +49,7 @@ end
 # REQUEST
 # ==============================================================================
 begin
-	token = get_jira_token
+	token = get_jira_token()
 rescue StandardError => e
 	warn "jira_api_read: #{e.message}"
 	exit 1

@@ -58,7 +58,7 @@ end
 # SEND
 # ==============================================================================
 begin
-	token = get_slack_token
+	token = get_slack_token()
 rescue StandardError => e
 	warn "slack_send_message: #{e.message}"
 	exit 1
