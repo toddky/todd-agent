@@ -12,7 +12,7 @@
 if [[ "${1:-}" == "--schema" ]]; then
 	cat <<'SCHEMA'
 {
-  "description": "Run the LSF bjobs command and return its output. Input: {\"args\": [\"-u\", \"all\"], \"limit\": <max lines>}. args is an array passed to bjobs verbatim (no shell reparse); omit it to list your own jobs. bjobs can print many rows, so output is capped at 10 lines by default; raise \"limit\" (or set it to 0) for more. When capped, a note reports the total line count.",
+  "description": "Run the LSF bjobs command and return its output. Input: {\"args\": [\"-u\", \"all\"], \"limit\": <max lines>}. args is an array passed to bjobs verbatim (no shell reparse); omit it to list your own jobs. For a single job's full detail, prefer \"-UF <jobid>\" over \"-l\": -UF prints the record unwrapped, while -l wraps and indents long fields. bjobs can print many rows, so output is capped at 10 lines by default; raise \"limit\" (or set it to 0) for more. When capped, a note reports the total line count.",
   "input_schema": {
     "type": "object",
     "properties": {
