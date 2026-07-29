@@ -32,13 +32,13 @@ fi
 # ==============================================================================
 input_json="$(cat)"
 if ! jq -e . >/dev/null 2>&1 <<< "$input_json"; then
-	echo "bhist: input is not valid JSON" 1>&2
+	echo "lsf_bhist: input is not valid JSON" 1>&2
 	exit 2
 fi
 
 jobid="$(jq -r '.jobid // ""' <<< "$input_json")"
 if [[ -z "$jobid" ]]; then
-	echo 'bhist: missing required non-empty string "jobid" in JSON input; expected {"jobid": "630765329"}' 1>&2
+	echo 'lsf_bhist: missing required non-empty string "jobid" in JSON input; expected {"jobid": "630765329"}' 1>&2
 	exit 2
 fi
 
@@ -54,7 +54,7 @@ fi
 # RUN
 # ==============================================================================
 if ! command -v bhist > /dev/null 2>&1; then
-	echo "bhist: command not found on PATH" 1>&2
+	echo "lsf_bhist: command not found on PATH" 1>&2
 	exit 1
 fi
 
@@ -75,7 +75,7 @@ if (( run_status == 124 )); then
 fi
 
 if (( run_status != 0 )); then
-	echo "bhist: exited $run_status: $output" 1>&2
+	echo "lsf_bhist: exited $run_status: $output" 1>&2
 	exit 1
 fi
 

@@ -32,25 +32,25 @@ fi
 # ==============================================================================
 input_json="$(cat)"
 if ! jq -e . >/dev/null 2>&1 <<< "$input_json"; then
-	echo "bjobs: input is not valid JSON" 1>&2
+	echo "lsf_bjobs: input is not valid JSON" 1>&2
 	exit 2
 fi
 
 # args must be absent, null, or an array of strings; anything else is malformed.
 args_type="$(jq -r '.args | type' <<< "$input_json")"
 if [[ "$args_type" != "null" && "$args_type" != "array" ]]; then
-	echo 'bjobs: "args" must be an array of strings, e.g. {"args": ["-u", "all"]}' 1>&2
+	echo 'lsf_bjobs: "args" must be an array of strings, e.g. {"args": ["-u", "all"]}' 1>&2
 	exit 2
 fi
 if [[ "$args_type" == "array" ]] && jq -e '[.args[] | type] | any(. != "string")' >/dev/null <<< "$input_json"; then
-	echo 'bjobs: "args" must be an array of strings, e.g. {"args": ["-u", "all"]}' 1>&2
+	echo 'lsf_bjobs: "args" must be an array of strings, e.g. {"args": ["-u", "all"]}' 1>&2
 	exit 2
 fi
 
 # 10 lines is a small default because bjobs can return hundreds of rows.
 limit="$(jq -r '.limit // 10' <<< "$input_json")"
 if [[ ! "$limit" =~ ^[0-9]+$ ]]; then
-	echo "bjobs: \"limit\" must be a non-negative integer; got: $limit" 1>&2
+	echo "lsf_bjobs: \"limit\" must be a non-negative integer; got: $limit" 1>&2
 	exit 2
 fi
 
@@ -67,14 +67,14 @@ if [[ "$args_type" == "array" ]]; then
 fi
 
 if ! command -v bjobs > /dev/null 2>&1; then
-	echo "bjobs: command not found on PATH" 1>&2
+	echo "lsf_bjobs: command not found on PATH" 1>&2
 	exit 1
 fi
 
 output="$(bjobs "${bjobs_args[@]}" 2>&1)"
 run_status=$?
 if (( run_status != 0 )); then
-	echo "bjobs: exited $run_status: $output" 1>&2
+	echo "lsf_bjobs: exited $run_status: $output" 1>&2
 	exit 1
 fi
 
