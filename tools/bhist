@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Show full LSF history for one job via 'bhist -UF -n 1000 <jobid>'. Input: {\"jobid\": \"<id>\"}. This command is slow, so its default timeout is 600 seconds (10 minutes); raise or lower it with timeout_secs. On timeout, whatever bhist printed so far is returned with a note.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "jobid": {"type": "string", "description": "The LSF job id to show history for, e.g. \"630765329\""}
+    },
+    "required": ["jobid"]
+  },
+  "timeout_secs": 600
+}
+SCHEMA
+	exit 0
+fi
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json="$(cat)"
+if ! jq -e . >/dev/null 2>&1 <<< "$input_json"; then
+	echo "bhist: input is not valid JSON" 1>&2
+	exit 2
+fi
+
+jobid="$(jq -r '.jobid // ""' <<< "$input_json")"
+if [[ -z "$jobid" ]]; then
+	echo 'bhist: missing required non-empty string "jobid" in JSON input; expected {"jobid": "630765329"}' 1>&2
+	exit 2
+fi
+
+# Self-time to the caller's timeout_secs, falling back to our schema default.
+# The agent's hard kill is this value plus a grace, so timing out here yields partial results first.
+run_timeout="$(jq -r '.timeout_secs // empty' <<< "$input_json")"
+if [[ -z "$run_timeout" ]]; then
+	run_timeout="$("$0" --schema | jq -r '.timeout_secs')"
+fi
+
+
+# ==============================================================================
+# RUN
+# ==============================================================================
+if ! command -v bhist > /dev/null 2>&1; then
+	echo "bhist: command not found on PATH" 1>&2
+	exit 1
+fi
+
+# bhist receives jobid as a single argv element, so no value is reparsed by a shell.
+# A budget under 1s leaves no useful run time, so run unwrapped and let the agent's deadline rule.
+run_cmd=(bhist -UF -n 1000 "$jobid")
+if (( run_timeout >= 1 )); then
+	run_cmd=(timeout "$run_timeout" "${run_cmd[@]}")
+fi
+output="$("${run_cmd[@]}" 2>&1)"
+run_status=$?
+
+# timeout(1) exits 124 when it had to kill bhist; whatever printed so far is still usable.
+if (( run_status == 124 )); then
+	printf '%s\n' "$output"
+	echo "... bhist timed out after ${run_timeout}s: results are partial; raise timeout_secs if you need the full history"
+	exit 0
+fi
+
+if (( run_status != 0 )); then
+	echo "bhist: exited $run_status: $output" 1>&2
+	exit 1
+fi
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+printf '%s\n' "$output"
