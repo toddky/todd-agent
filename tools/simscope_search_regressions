@@ -14,11 +14,11 @@ require_relative 'simscope'
 # ==============================================================================
 if ARGV[0] == '--schema'
 	schema = {
-		'description' => 'Search Simscope regressions (test-suite runs) with optional filters. Simscope is a test triage and regression management system. Input: {"runtag": "<tag prefix>", "component": "<name>", "branch": "<model branch>", "days": <int>, "limit": <int>}, all optional. Use "runtag" (NOT "tag") to filter by regression tag, e.g. {"runtag": "tt-regress", "component": "bbl:fe_tb:vcs", "days": 14, "limit": 10}. Returns matching regressions with name, group, and pass/fail stats.',
+		'description' => 'Search Simscope regressions (test-suite runs) with optional filters. Simscope is a test triage and regression management system. Input: {"runtag": "<tag prefix>", "component": "<name>", "branch": "<model branch>", "days": <int>, "limit": <int>}, all optional. Use "runtag" (NOT "tag") to filter by regression tag, e.g. {"runtag": "tt-regress", "component": "bbl:fe_tb:vcs", "days": 14, "limit": 10}. Prefix the runtag with "!" to negate it, e.g. {"runtag": "!tt-regress"} returns regressions whose tag does NOT start with tt-regress. Returns matching regressions with name, group, and pass/fail stats.',
 		'input_schema' => {
 			'type' => 'object',
 			'properties' => {
-				'runtag' => { 'type' => 'string', 'description' => 'Regression tag prefix to filter by, e.g. "tt-regress" or "official.ci". Use this, not "tag".' },
+				'runtag' => { 'type' => 'string', 'description' => 'Regression tag prefix to filter by, e.g. "tt-regress" or "official.ci". Use this, not "tag". Prefix with "!" to negate, e.g. "!tt-regress" matches tags that do NOT start with tt-regress.' },
 				'component' => { 'type' => 'string', 'description' => 'Component name to filter by, e.g. "bbl:fe_tb:vcs". Pair with runtag when targeting a specific block.' },
 				'branch' => { 'type' => 'string', 'description' => 'Model branch name to filter by' },
 				'days' => { 'type' => 'integer', 'description' => 'Only include regressions from the last N days' },
