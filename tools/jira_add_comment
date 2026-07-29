@@ -1,0 +1,88 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'jira'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Add a comment to a Jira issue. Input: {"key": "<issue key>", "body": "<comment>"}. Use Jira wiki markup in the body. Returns the new comment id and URL.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'key' => { 'type' => 'string', 'description' => 'Issue key to comment on, e.g. "HWINFRA-585"' },
+				'body' => { 'type' => 'string', 'description' => 'Comment body in Jira wiki markup' }
+			},
+			'required' => %w[key body]
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "jira_add_comment: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+key = args['key']
+if !key.is_a?(String) || key.empty?
+	warn 'jira_add_comment: missing required non-empty string "key" in JSON input; expected {"key": "HWINFRA-585", "body": "..."}'
+	exit 2
+end
+
+body = args['body']
+if !body.is_a?(String) || body.empty?
+	warn 'jira_add_comment: missing required non-empty string "body" in JSON input'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_jira_token()
+rescue StandardError => e
+	warn "jira_add_comment: #{e.message}"
+	exit 1
+end
+
+begin
+	response = jira_request('POST', "issue/#{key}/comment", token, { 'body' => body })
+rescue StandardError => e
+	warn "jira_add_comment: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "jira_add_comment: Jira returned HTTP #{response.code} for #{key}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+begin
+	created = JSON.parse(response.body)
+rescue JSON::ParserError => e
+	warn "jira_add_comment: response is not valid JSON: #{e.message}"
+	exit 1
+end
+
+puts "Commented on #{key} (comment #{created['id']})"
+puts "URL: https://tenstorrent.atlassian.net/browse/#{key}?focusedCommentId=#{created['id']}"
