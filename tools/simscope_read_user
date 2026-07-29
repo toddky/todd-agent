@@ -14,13 +14,12 @@ require_relative 'simscope'
 # ==============================================================================
 if ARGV[0] == '--schema'
 	schema = {
-		'description' => 'Read a Simscope user account: uid, login, email, name, and admin/manager flags. Simscope is a test triage and regression management system. Input: {"userid": "<user id>"}, e.g. {"userid": "tyamakawa"}.',
+		'description' => 'Read a Simscope user account: uid, login, email, name, and admin/manager flags. Simscope is a test triage and regression management system. Input: {"userid": "<user id>"}, e.g. {"userid": "tyamakawa"}. Omit userid (or pass {}) to return the account that owns the current API token.',
 		'input_schema' => {
 			'type' => 'object',
 			'properties' => {
-				'userid' => { 'type' => 'string', 'description' => 'User ID to look up, e.g. "tyamakawa"' }
-			},
-			'required' => ['userid']
+				'userid' => { 'type' => 'string', 'description' => 'User ID to look up, e.g. "tyamakawa". Omit to return the current API token owner.' }
+			}
 		},
 		'timeout_secs' => 30
 	}
@@ -40,8 +39,8 @@ rescue JSON::ParserError => e
 end
 
 userid = args['userid']
-if !userid.is_a?(String) || userid.empty?
-	warn 'simscope_read_user: missing required non-empty string "userid" in JSON input; expected {"userid": "tyamakawa"}'
+if !userid.nil? && !userid.is_a?(String)
+	warn 'simscope_read_user: "userid" must be a string when provided; expected {"userid": "tyamakawa"} or {} for the current token owner'
 	exit 2
 end
 
@@ -55,8 +54,11 @@ rescue StandardError => e
 	exit 1
 end
 
+# With no userid, config/whoami returns the account that owns the current token.
+endpoint = (userid.nil? || userid.empty?) ? 'config/whoami' : "u/#{userid}"
+
 begin
-	response = simscope_get("u/#{userid}", token)
+	response = simscope_get(endpoint, token)
 	user = simscope_parse(response)
 rescue StandardError => e
 	warn "simscope_read_user: request failed: #{e.message}"
@@ -64,7 +66,7 @@ rescue StandardError => e
 end
 
 unless response.is_a?(Net::HTTPSuccess)
-	warn "simscope_read_user: Simscope returned HTTP #{response.code} for #{userid}: #{response.body}"
+	warn "simscope_read_user: Simscope returned HTTP #{response.code} for #{endpoint}: #{response.body}"
 	exit 1
 end
 
