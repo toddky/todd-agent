@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Snapshot the current stdout/stderr of a RUNNING LSF job via bpeek. Input: {\"jobid\": \"<id>\", \"limit\": <max lines>}. Returns whatever the job has printed so far and returns immediately; it never follows/tails, so it cannot hang. Output is capped at 40 lines by default; raise \"limit\" (or set it to 0) for more. When capped, a note reports the total line count.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "jobid": {"type": "string", "description": "The LSF job id to peek at, e.g. \"630765329\""},
+      "limit": {"type": "integer", "description": "Max output lines to return (default 40); 0 means no cap"}
+    },
+    "required": ["jobid"]
+  },
+  "timeout_secs": 30
+}
+SCHEMA
+	exit 0
+fi
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json="$(cat)"
+if ! jq -e . >/dev/null 2>&1 <<< "$input_json"; then
+	echo "lsf_bpeek: input is not valid JSON" 1>&2
+	exit 2
+fi
+
+jobid="$(jq -r '.jobid // ""' <<< "$input_json")"
+if [[ -z "$jobid" ]]; then
+	echo 'lsf_bpeek: missing required non-empty string "jobid" in JSON input; expected {"jobid": "630765329"}' 1>&2
+	exit 2
+fi
+
+# 40 lines suits a job-output snapshot; bjobs/bqueues use 10 but log output is denser.
+limit="$(jq -r '.limit // 40' <<< "$input_json")"
+if [[ ! "$limit" =~ ^[0-9]+$ ]]; then
+	echo "lsf_bpeek: \"limit\" must be a non-negative integer; got: $limit" 1>&2
+	exit 2
+fi
+
+
+# ==============================================================================
+# RUN
+# ==============================================================================
+if ! command -v bpeek > /dev/null 2>&1; then
+	echo "lsf_bpeek: command not found on PATH" 1>&2
+	exit 1
+fi
+
+# Pass only the jobid, never -f: bpeek -f follows the output stream and would
+# never return, hanging the tool until the agent's hard kill.
+output="$(bpeek "$jobid" 2>&1)"
+run_status=$?
+if (( run_status != 0 )); then
+	echo "lsf_bpeek: exited $run_status: $output" 1>&2
+	exit 1
+fi
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+total_count="$(wc -l <<< "$output")"
+if (( limit == 0 || total_count <= limit )); then
+	printf '%s\n' "$output"
+else
+	head -n "$limit" <<< "$output"
+	echo "... truncated: showing $limit of $total_count lines; raise \"limit\" or set it to 0 for the full snapshot"
+fi
