@@ -1,0 +1,58 @@
+# Shared GitLab helpers for the gitlab_* tool scripts.
+# Not executable, so the tool registry's --schema discovery skips it.
+
+require 'json'
+require 'net/http'
+require 'uri'
+
+# ==============================================================================
+# CONFIG
+# ==============================================================================
+# The base URL lives in ~/.gitlab_url; endpoints are relative to /api/v4/.
+# Matches the gitlab-curl wrapper's credential layout.
+def gitlab_base_url()
+	url_file = File.join(Dir.home, '.gitlab_url')
+	raise "no GitLab URL found at #{url_file}" unless File.file?(url_file)
+	return "#{File.read(url_file).strip}/api/v4"
+end
+
+# ==============================================================================
+# TOKEN
+# ==============================================================================
+# Read the personal API token from ~/.gitlab_key, matching gitlab-curl.
+def get_gitlab_token()
+	token_file = File.join(Dir.home, '.gitlab_key')
+	raise "no GitLab API token found at #{token_file}" unless File.file?(token_file)
+	return File.read(token_file).strip
+end
+
+# ==============================================================================
+# HTTP
+# ==============================================================================
+# Send one request to the v4 API. The endpoint is relative to /api/v4/;
+# a leading base URL or /api/v4/ or / is stripped so callers can pass either form.
+# Writes always send JSON, so array/object fields like assignee_ids just work.
+def gitlab_request(method, endpoint, token, body = nil)
+	base = gitlab_base_url
+	endpoint = endpoint.sub(%r{\A#{Regexp.escape(base)}/?}, '').sub(%r{\A/api/v4/}, '').sub(%r{\A/}, '')
+	uri = URI("#{base}/#{endpoint}")
+
+	request_class = {
+		'GET' => Net::HTTP::Get,
+		'POST' => Net::HTTP::Post,
+		'PUT' => Net::HTTP::Put
+	}.fetch(method) { raise "unsupported HTTP method: #{method}" }
+
+	request = request_class.new(uri)
+	request['PRIVATE-TOKEN'] = token
+	request['Accept'] = 'application/json'
+	if body
+		request['Content-Type'] = 'application/json'
+		request.body = body.is_a?(String) ? body : body.to_json
+	end
+
+	http = Net::HTTP.new(uri.host, uri.port)
+	http.use_ssl = (uri.scheme == 'https')
+	response = http.request(request)
+	return response
+end
