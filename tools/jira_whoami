@@ -1,0 +1,67 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'jira'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Show the Jira account that owns the current API token: display name, email, accountId, and time zone. Takes no input; pass {} or nothing.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {}
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_jira_token()
+rescue StandardError => e
+	warn "jira_whoami: #{e.message}"
+	exit 1
+end
+
+begin
+	response = jira_request('GET', 'myself', token)
+rescue StandardError => e
+	warn "jira_whoami: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "jira_whoami: Jira returned HTTP #{response.code}: #{response.body}"
+	exit 1
+end
+
+begin
+	me = JSON.parse(response.body)
+rescue JSON::ParserError => e
+	warn "jira_whoami: response is not valid JSON: #{e.message}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+lines = []
+lines.append("Name: #{me['displayName']}")
+lines.append("Email: #{me['emailAddress']}")
+lines.append("Account ID: #{me['accountId']}")
+lines.append("Time zone: #{me['timeZone']}")
+lines.append("Active: #{me['active'] ? 'yes' : 'no'}")
+
+puts lines.join("\n")
