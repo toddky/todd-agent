@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'jira'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'File a new Jira issue. Input: {"project": "<key>", "issuetype": "<name>", "summary": "<text>", "description": "<wiki markup>", "priority": "<name>", "labels": ["a","b"], "assignee": "<accountId>", "extra_fields": {...}}. project, issuetype, and summary are required; the rest are optional. Use Jira wiki markup in the description. extra_fields is merged last for custom fields (e.g. {"customfield_10001": "x"}). Returns the new key and URL.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'project' => { 'type' => 'string', 'description' => 'Project key, e.g. "HWINFRA"' },
+				'issuetype' => { 'type' => 'string', 'description' => 'Issue type name, e.g. "Task", "Bug", "Story"' },
+				'summary' => { 'type' => 'string', 'description' => 'One-line issue summary' },
+				'description' => { 'type' => 'string', 'description' => 'Issue description in Jira wiki markup' },
+				'priority' => { 'type' => 'string', 'description' => 'Priority name, e.g. "P1_Critical_without_workaround"' },
+				'labels' => { 'type' => 'array', 'items' => { 'type' => 'string' }, 'description' => 'Labels to set' },
+				'assignee' => { 'type' => 'string', 'description' => 'Assignee accountId (resolve via a user search first)' },
+				'extra_fields' => { 'type' => 'object', 'description' => 'Additional raw fields merged last, e.g. custom fields' }
+			},
+			'required' => %w[project issuetype summary]
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "jira_create_issue: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+project = args['project']
+if !project.is_a?(String) || project.empty?
+	warn 'jira_create_issue: missing required non-empty string "project" in JSON input; expected {"project": "HWINFRA", "issuetype": "Task", "summary": "..."}'
+	exit 2
+end
+
+issuetype = args['issuetype']
+if !issuetype.is_a?(String) || issuetype.empty?
+	warn 'jira_create_issue: missing required non-empty string "issuetype" in JSON input; e.g. "Task", "Bug", "Story"'
+	exit 2
+end
+
+summary = args['summary']
+if !summary.is_a?(String) || summary.empty?
+	warn 'jira_create_issue: missing required non-empty string "summary" in JSON input'
+	exit 2
+end
+
+extra_fields = args['extra_fields']
+if !extra_fields.nil? && !extra_fields.is_a?(Hash)
+	warn "jira_create_issue: \"extra_fields\" must be a JSON object; got #{extra_fields.class}"
+	exit 2
+end
+
+# ==============================================================================
+# BUILD
+# ==============================================================================
+# The tool builds the nested field shapes so the caller passes flat values.
+fields = {
+	'project' => { 'key' => project },
+	'issuetype' => { 'name' => issuetype },
+	'summary' => summary
+}
+fields['description'] = args['description'] if args['description']
+fields['priority'] = { 'name' => args['priority'] } if args['priority']
+fields['labels'] = args['labels'] if args['labels']
+fields['assignee'] = { 'accountId' => args['assignee'] } if args['assignee']
+# extra_fields is merged last so an explicit raw field wins over a built one.
+fields.merge!(extra_fields) if extra_fields
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_jira_token()
+rescue StandardError => e
+	warn "jira_create_issue: #{e.message}"
+	exit 1
+end
+
+begin
+	response = jira_request('POST', 'issue', token, { 'fields' => fields })
+rescue StandardError => e
+	warn "jira_create_issue: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "jira_create_issue: Jira returned HTTP #{response.code}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+begin
+	created = JSON.parse(response.body)
+rescue JSON::ParserError => e
+	warn "jira_create_issue: response is not valid JSON: #{e.message}"
+	exit 1
+end
+
+key = created['key'].to_s
+puts "Created: #{key}"
+puts "URL: https://tenstorrent.atlassian.net/browse/#{key}" unless key.empty?
