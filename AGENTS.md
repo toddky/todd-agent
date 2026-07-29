@@ -36,6 +36,16 @@ todd-agent/
 │   ├── grep             # regex search, file:line:text output (rg-first, grep -rn fallback)
 │   ├── glob             # find files by glob pattern (rg-first, find fallback)
 │   ├── list_dir         # list a directory as '<type> <name>' lines: f=file, d=directory, l=symlink
+│   ├── slack.rb         # shared Slack helpers (require_relative'd; not executable, so discovery skips it)
+│   ├── slack_read_channel      # read a conversation's recent history (channels, DMs, group DMs)
+│   ├── slack_read_thread       # read a thread: parent message plus replies
+│   ├── slack_send_message      # post a message or thread reply
+│   ├── slack_search_channels   # find channels by name (public and private)
+│   ├── slack_search_users      # find users by name, display name, or email
+│   ├── slack_read_user_profile # read a user's profile (defaults to the current user)
+│   ├── glean.rb         # shared Glean helpers (require_relative'd; not executable, so discovery skips it)
+│   ├── glean_search            # ask Glean Assistant chat a question
+│   ├── glean_read_document     # read Glean-indexed documents by URL
 │   └── ...
 └── docs/
     └── examples/        # reference notes on how other coding agents define tools and hooks
