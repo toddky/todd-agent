@@ -1,0 +1,125 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require 'csv'
+require_relative 'simscope'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+# The default row cap is low on purpose: a regression can have thousands of
+# tests, and dumping them all floods the caller's context. Page with offset.
+DEFAULT_LIMIT = 50
+
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Read per-test results for a Simscope regression as a table. Simscope is a test triage and regression management system. Input: {"regr": "<regression name or id>", "fail_only": <bool>, "limit": <int>, "offset": <int>}. "regr" is required. By default only failing tests are shown (fail_only=true) since a regression can have thousands of passing tests; set fail_only=false to include passes. Results are paged: at most "limit" rows (default 50) starting at "offset" (default 0). A summary line reports total pass/fail counts and how many rows were shown, so page with offset to see more.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'regr' => { 'type' => 'string', 'description' => 'Regression name or id, e.g. "mmu_tb:vcs+2464092" or "2009132". For a rungroup name like "all+123", use pass a rungroup instead (this endpoint keys on a single regression).' },
+				'fail_only' => { 'type' => 'boolean', 'description' => 'Show only failing tests (default true). Set false to include passing tests.' },
+				'limit' => { 'type' => 'integer', 'description' => "Max rows to show (default #{DEFAULT_LIMIT}). Kept low to avoid flooding context; page with offset." },
+				'offset' => { 'type' => 'integer', 'description' => 'Row offset into the filtered result set for paging (default 0).' }
+			},
+			'required' => ['regr']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "simscope_read_tests_csv: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+regr = args['regr']
+if !regr.is_a?(String) || regr.empty?
+	warn 'simscope_read_tests_csv: missing required non-empty string "regr" in JSON input; expected {"regr": "mmu_tb:vcs+2464092"}'
+	exit 2
+end
+
+fail_only = args.key?('fail_only') ? args['fail_only'] : true
+limit = args['limit'].is_a?(Integer) ? args['limit'] : DEFAULT_LIMIT
+offset = args['offset'].is_a?(Integer) ? args['offset'] : 0
+if limit < 1
+	warn 'simscope_read_tests_csv: "limit" must be a positive integer'
+	exit 2
+end
+if offset < 0
+	warn 'simscope_read_tests_csv: "offset" must be a non-negative integer'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_simscope_token()
+rescue StandardError => e
+	warn "simscope_read_tests_csv: #{e.message}"
+	exit 1
+end
+
+# Fetch the full result set once (up to the server cap), then filter and page
+# locally so the summary counts reflect the whole regression, not just one page.
+begin
+	response = simscope_get('tests/csv', token, { 'regr' => regr, 'limit' => 10000 })
+rescue StandardError => e
+	warn "simscope_read_tests_csv: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "simscope_read_tests_csv: Simscope returned HTTP #{response.code} for #{regr}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+begin
+	rows = CSV.parse(response.body, headers: true)
+rescue CSV::MalformedCSVError => e
+	warn "simscope_read_tests_csv: could not parse CSV response: #{e.message}"
+	exit 1
+end
+
+all_tests = rows.map(&:to_h)
+passed = all_tests.count { |test| test['result'] == 'pass' }
+failed = all_tests.count { |test| test['result'] == 'fail' }
+
+selected = fail_only ? all_tests.select { |test| test['result'] == 'fail' } : all_tests
+page = selected[offset, limit] || []
+
+lines = []
+lines.append("Regression: #{regr}")
+lines.append("Total: #{all_tests.length} tests  Passed: #{passed}  Failed: #{failed}")
+filter_note = fail_only ? 'failing tests' : 'all tests'
+lines.append("Showing #{page.length} of #{selected.length} #{filter_note} (offset #{offset}, limit #{limit})")
+if offset + page.length < selected.length
+	lines.append("More rows available: set offset=#{offset + page.length} for the next page.")
+end
+lines.append('')
+
+# config (col 11) is the real test name; testname (col 10) is always empty.
+page.each do |test|
+	lines.append("#{test['result']}  #{test['group']}  #{test['config']}")
+	lines.append("    sigid=#{test['sigid']}  jobid=#{test['jobid']}  runtime_ms=#{test['runtime_ms']}")
+end
+
+puts lines.join("\n")
