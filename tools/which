@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Resolve a command name to the executable that would run, like the shell's which. Input: {\"command\": \"<name>\"}, e.g. {\"command\": \"ls\"}. Prints the resolved path on success; exits 1 when the command is not found on PATH.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "command": {"type": "string", "description": "Command name to resolve on PATH, e.g. 'ls' or 'python3'"}
+    },
+    "required": ["command"]
+  }
+}
+SCHEMA
+	exit 0
+fi
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+if ! command_name="$(jq -r '.command // ""' 2>&1)"; then
+	echo "which: input is not valid JSON: $command_name" 1>&2
+	exit 2
+fi
+if [[ -z "$command_name" ]]; then
+	echo "which: missing required non-empty string \"command\" in JSON input; expected {\"command\": \"<name>\"}" 1>&2
+	exit 2
+fi
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+# command -v is the POSIX resolver; the name is never reparsed by a shell.
+# It also resolves builtins and aliases, matching what the shell would run.
+if ! resolved="$(command -v -- "$command_name" 2>/dev/null)"; then
+	echo "which: command not found on PATH: $command_name" 1>&2
+	exit 1
+fi
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+printf '%s\n' "$resolved"
