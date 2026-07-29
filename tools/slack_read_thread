@@ -39,7 +39,7 @@ def append_message(lines, message, token, cache)
 	lines.append("From: #{sender_identity(message, token, cache)}")
 	lines.append("Time: #{format_ts(message['ts'])}")
 	lines.append("Message TS: #{message['ts']}")
-	lines.append(message['text'].to_s)
+	lines.append(message_body(message))
 	reactions_line = format_reactions(message)
 	lines.append(reactions_line) unless reactions_line.empty?
 end
