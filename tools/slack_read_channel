@@ -117,7 +117,7 @@ lines.append('')
 messages.each do |message|
 	lines.append(sender_line(message, token, user_cache))
 	lines.append("Message TS: #{message['ts']}")
-	lines.append(message['text'].to_s)
+	lines.append(message_body(message))
 
 	reply_count = message['reply_count'].to_i
 	if reply_count > 0
