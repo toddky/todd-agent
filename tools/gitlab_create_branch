@@ -1,0 +1,79 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'gitlab'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Create a GitLab branch from a ref. Input: {"project": "<id or path>", "branch": "<new branch name>", "ref": "<source branch, tag, or sha>"}. project may be a numeric id (505) or a path (riscv/riscv_cluster). On riscv_cluster (505) branch names are enforced server-side, so a non-conforming name is rejected with an error.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'project' => { 'type' => 'string', 'description' => 'Project numeric id (e.g. "505") or path (e.g. "riscv/riscv_cluster")' },
+				'branch' => { 'type' => 'string', 'description' => 'Name of the new branch to create' },
+				'ref' => { 'type' => 'string', 'description' => 'Source ref to branch from (branch name, tag, or commit sha)' }
+			},
+			'required' => ['project', 'branch', 'ref']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "gitlab_create_branch: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+%w[project branch ref].each do |field|
+	value = args[field]
+	next if value.is_a?(String) && !value.empty?
+	warn "gitlab_create_branch: missing required non-empty string \"#{field}\" in JSON input"
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_gitlab_token()
+rescue StandardError => e
+	warn "gitlab_create_branch: #{e.message}"
+	exit 1
+end
+
+endpoint = "projects/#{gitlab_project(args['project'])}/repository/branches"
+begin
+	response = gitlab_request('POST', endpoint, token, { 'branch' => args['branch'], 'ref' => args['ref'] })
+rescue StandardError => e
+	warn "gitlab_create_branch: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "gitlab_create_branch: GitLab returned HTTP #{response.code}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+branch = JSON.parse(response.body)
+commit = branch['commit'] || {}
+puts "Created branch #{branch['name']} at #{commit['short_id']}: #{commit['title']}"
