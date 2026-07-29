@@ -1,0 +1,87 @@
+#!/usr/bin/env ruby
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+require 'json'
+require_relative 'simscope'
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if ARGV[0] == '--schema'
+	schema = {
+		'description' => 'Read a Simscope user account: uid, login, email, name, and admin/manager flags. Simscope is a test triage and regression management system. Input: {"userid": "<user id>"}, e.g. {"userid": "tyamakawa"}.',
+		'input_schema' => {
+			'type' => 'object',
+			'properties' => {
+				'userid' => { 'type' => 'string', 'description' => 'User ID to look up, e.g. "tyamakawa"' }
+			},
+			'required' => ['userid']
+		},
+		'timeout_secs' => 30
+	}
+	puts JSON.pretty_generate(schema)
+	exit 0
+end
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json = $stdin.read
+begin
+	args = JSON.parse(input_json)
+rescue JSON::ParserError => e
+	warn "simscope_read_user: input is not valid JSON: #{e.message}"
+	exit 2
+end
+
+userid = args['userid']
+if !userid.is_a?(String) || userid.empty?
+	warn 'simscope_read_user: missing required non-empty string "userid" in JSON input; expected {"userid": "tyamakawa"}'
+	exit 2
+end
+
+# ==============================================================================
+# REQUEST
+# ==============================================================================
+begin
+	token = get_simscope_token()
+rescue StandardError => e
+	warn "simscope_read_user: #{e.message}"
+	exit 1
+end
+
+begin
+	response = simscope_get("u/#{userid}", token)
+	user = simscope_parse(response)
+rescue StandardError => e
+	warn "simscope_read_user: request failed: #{e.message}"
+	exit 1
+end
+
+unless response.is_a?(Net::HTTPSuccess)
+	warn "simscope_read_user: Simscope returned HTTP #{response.code} for #{userid}: #{response.body}"
+	exit 1
+end
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+user = {} unless user.is_a?(Hash)
+
+lines = []
+lines.append("UID: #{user['uid']}")
+lines.append("Login: #{user['login']}")
+lines.append("Name: #{user['name']}")
+lines.append("Email: #{user['email']}")
+lines.append("Admin: #{user['admin'] ? 'yes' : 'no'}")
+lines.append("Manager: #{user['manager'] ? 'yes' : 'no'}")
+lines.append("Disabled: #{user['disabled'] ? 'yes' : 'no'}")
+lines.append("Has API token: #{user['apitoken'] ? 'yes' : 'no'}")
+lines.append("Last access: #{user['access']}")
+
+puts lines.join("\n")
