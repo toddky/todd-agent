@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/toddky/todd-agent/internal/llm"
 )
@@ -19,6 +20,25 @@ type Agent struct {
 	SystemPrompt string
 	// AllowExit advertises the internal exit tool so the model can terminate the agent process.
 	AllowExit bool
+	// Subagents maps each subagent's tool name (subagent_<name>) to its child
+	// process handle; Turn dispatches these internally, like the exit tool.
+	Subagents map[string]*Subagent
+}
+
+// AttachSubagent registers a subagent under its tool name so the next Turn
+// advertises it. Frontends call this for --subagent flags and REPL &name.
+func (a *Agent) AttachSubagent(sub *Subagent) {
+	if a.Subagents == nil {
+		a.Subagents = map[string]*Subagent{}
+	}
+	a.Subagents[sub.toolName()] = sub
+}
+
+// KillSubagents terminates every attached subagent child process.
+func (a *Agent) KillSubagents() {
+	for _, sub := range a.Subagents {
+		sub.Kill()
+	}
 }
 
 // ExitRequest is returned as the Turn error when the model calls the exit tool.
@@ -57,6 +77,15 @@ func (a *Agent) Turn(messages []llm.Message, notify func(Event)) ([]llm.Message,
 	defs := a.Tools.Definitions()
 	if a.AllowExit {
 		defs = append(defs, exitToolDef)
+	}
+	// Sort subagent defs by name so requests stay deterministic, like Definitions().
+	subagentNames := make([]string, 0, len(a.Subagents))
+	for name := range a.Subagents {
+		subagentNames = append(subagentNames, name)
+	}
+	sort.Strings(subagentNames)
+	for _, name := range subagentNames {
+		defs = append(defs, a.Subagents[name].Definition())
 	}
 	for {
 		// The system message is prepended per request, not stored in the returned
@@ -100,7 +129,7 @@ func (a *Agent) Turn(messages []llm.Message, notify func(Event)) ([]llm.Message,
 				return messages, &request
 			}
 
-			output, err := a.Tools.Run(block.Name, block.Input)
+			output, err := a.runTool(block.Name, block.Input, notify)
 			isError := err != nil
 			if isError {
 				output = err.Error()
@@ -120,4 +149,20 @@ func (a *Agent) Turn(messages []llm.Message, notify func(Event)) ([]llm.Message,
 		}
 		messages = append(messages, llm.Message{Role: "user", Content: results})
 	}
+}
+
+// runTool dispatches one tool call: attached subagents are handled in-process,
+// everything else execs a script through the registry.
+func (a *Agent) runTool(name string, input json.RawMessage, notify func(Event)) (string, error) {
+	sub, isSubagent := a.Subagents[name]
+	if !isSubagent {
+		return a.Tools.Run(name, input)
+	}
+	var call struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(input, &call); err != nil || call.Prompt == "" {
+		return "", fmt.Errorf("tool %s requires a non-empty \"prompt\" string, got %s", name, input)
+	}
+	return sub.Call(call.Prompt, notify)
 }
