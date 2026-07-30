@@ -11,6 +11,7 @@ import (
 
 	"github.com/toddky/todd-agent/internal/agent"
 	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/todd-agent/internal/ui/acp"
 	"github.com/toddky/todd-agent/internal/ui/oneshot"
 	"github.com/toddky/todd-agent/internal/ui/repl"
 )
@@ -62,6 +63,7 @@ func run() (int, error) {
 	prompt := flag.String("prompt", "", "first prompt to send; in REPL mode it runs before reading input")
 	promptFile := flag.String("prompt-file", "", "file whose contents become the first prompt; --prompt wins if both are set")
 	oneshotMode := flag.Bool("oneshot", false, "answer the first prompt in a single turn and exit (requires --prompt or --prompt-file)")
+	acpMode := flag.Bool("acp", false, "speak a minimal Agent Client Protocol subset over stdio so another process can drive this agent as a long-lived subagent")
 	allowExit := flag.Bool("allow-exit", false, "advertise an internal exit tool so the model can end the agent with any exit code")
 	agentName := flag.String("agent", "", "load a bundled agent from agents/<name>: its tools/ (as --tools-dir), prompt.md (as --prompt-file), and system_prompts/*.md (as --system-prompt-file)")
 	listAgents := flag.Bool("list-agents", false, "print the names of bundled agents under agents/ and exit")
@@ -69,6 +71,8 @@ func run() (int, error) {
 	flag.Var(&toolsDirs, "tools-dir", "tools directory to load; repeatable, later dirs win on name collisions (default: tools/ next to the binary)")
 	var systemPromptFiles stringList
 	flag.Var(&systemPromptFiles, "system-prompt-file", "file appended to the system prompt; repeatable, joined in flag order")
+	var subagentNames stringList
+	flag.Var(&subagentNames, "subagent", "bundled agent under agents/<name> to attach as a subagent_<name> tool; repeatable")
 	flag.Parse()
 
 	if *listAgents {
@@ -113,6 +117,12 @@ func run() (int, error) {
 		}
 	}
 
+	for _, name := range subagentNames {
+		if _, found := bundledDir(filepath.Join("agents", name)); !found {
+			return 3, fmt.Errorf("--subagent %q: no such agent under agents/", name)
+		}
+	}
+
 	if *prompt == "" && *promptFile != "" {
 		content, err := os.ReadFile(*promptFile)
 		if err != nil {
@@ -124,6 +134,9 @@ func run() (int, error) {
 	}
 	if *oneshotMode && *prompt == "" {
 		return 3, fmt.Errorf("--oneshot requires a first prompt; pass it with --prompt '...' or --prompt-file <file>")
+	}
+	if *acpMode && *oneshotMode {
+		return 3, fmt.Errorf("--acp and --oneshot are mutually exclusive frontends")
 	}
 
 	var systemPrompts []string
@@ -188,8 +201,19 @@ func run() (int, error) {
 		SystemPrompt: combinedSystemPrompt,
 		AllowExit:    *allowExit,
 	}
+	for _, name := range subagentNames {
+		engine.AttachSubagent(&agent.Subagent{Name: name})
+	}
+	// Children spawn lazily on first use; kill any that started when the process ends.
+	defer engine.KillSubagents()
 	if *oneshotMode {
 		return oneshot.Run(engine, *prompt)
+	}
+	if *acpMode {
+		if err := acp.Run(engine, os.Stdin, os.Stdout); err != nil {
+			return 3, err
+		}
+		return 0, nil
 	}
 	err = repl.Run(engine, *prompt)
 	var exitRequest *agent.ExitRequest
