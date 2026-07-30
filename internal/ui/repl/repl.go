@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -94,6 +95,18 @@ func readPromptPlain(scanner *bufio.Scanner) (string, error) {
 
 var errQuit = errors.New("quit")
 
+// attachSubagent registers a bundled agent as a subagent tool for the next turn.
+// The name is validated at first Call, not here: the REPL cannot see agents/,
+// so a bad name fails loudly on first use with the engine's error.
+func attachSubagent(engine *agent.Agent, name string) {
+	if name == "" {
+		fmt.Printf("%susage: &<agent-name>%s\n", red, reset)
+		return
+	}
+	engine.AttachSubagent(&agent.Subagent{Name: name})
+	fmt.Printf("%s🤖 attached subagent %s%s\n", gray, name, reset)
+}
+
 // printEvent prints one engine event.
 // Tool activity is gray so it reads as machinery, not model output.
 func printEvent(event agent.Event) {
@@ -140,6 +153,12 @@ func Run(engine *agent.Agent, firstPrompt string) error {
 			return err
 		}
 		if prompt == "" {
+			continue
+		}
+
+		// "&name" attaches a bundled agent as a subagent without running a model turn.
+		if strings.HasPrefix(prompt, "&") {
+			attachSubagent(engine, strings.TrimSpace(strings.TrimPrefix(prompt, "&")))
 			continue
 		}
 
