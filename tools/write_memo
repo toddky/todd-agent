@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Tool contract: JSON args on stdin, result text on stdout, reason on stderr.
+# "--schema" prints the tool's self-description so the registry can discover it.
+# Exit codes:
+#   0 = success
+#   1 = runtime failure
+#   2 = malformed call (bad arguments)
+
+# ==============================================================================
+# SCHEMA
+# ==============================================================================
+if [[ "${1:-}" == "--schema" ]]; then
+	cat <<'SCHEMA'
+{
+  "description": "Record a memo for the user to read later (e.g. lessons learned, corrections, notes for improving your instructions). Input: {\"content\": \"<markdown memo text>\"}. The destination is fixed by the harness; you cannot choose or see where it is written.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "content": {"type": "string", "description": "Full markdown text of the memo"}
+    },
+    "required": ["content"]
+  }
+}
+SCHEMA
+	exit 0
+fi
+
+
+# ==============================================================================
+# PARSE
+# ==============================================================================
+input_json="$(cat)"
+if ! error_message="$(jq -e '.' <<< "$input_json" 2>&1 > /dev/null)"; then
+	echo "write_memo: input is not valid JSON: $error_message" 1>&2
+	exit 2
+fi
+# Content must be a non-empty string: an empty memo has nothing to record.
+if ! jq -e '.content | type == "string" and length > 0' <<< "$input_json" > /dev/null 2>&1; then
+	echo "write_memo: missing required non-empty string \"content\" in JSON input; expected {\"content\": \"...\"}" 1>&2
+	exit 2
+fi
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+# The destination is fixed here, never taken from input, so the model cannot
+# redirect the write. AGENT_NAME comes from the harness when set; "agent" otherwise.
+memo_dir="${XDG_CONFIG_HOME:-$HOME/.config}/menehune/memos"
+if ! mkdir -p -- "$memo_dir"; then
+	echo "write_memo: cannot create memo directory: $memo_dir" 1>&2
+	exit 1
+fi
+
+agent_name="${AGENT_NAME:-agent}"
+memo_md="$memo_dir/$agent_name.$(date +%Y%m%d-%H%M%S).md"
+
+# Write to a sibling temp file then rename, so a mid-write kill (timeout)
+# cannot leave a truncated memo; same-dir rename is atomic.
+temp_file="$(mktemp -- "$memo_dir/.write_memo.XXXXXX" 2>/dev/null)"
+if [[ -z "$temp_file" ]]; then
+	echo "write_memo: cannot create temp file in: $memo_dir" 1>&2
+	exit 1
+fi
+trap 'rm -f -- "$temp_file"' EXIT
+
+# jq -j prints the raw string without the trailing newline jq -r would add.
+if ! jq -j '.content' <<< "$input_json" > "$temp_file"; then
+	echo "write_memo: failed to write memo content" 1>&2
+	exit 1
+fi
+if ! mv -f -- "$temp_file" "$memo_md"; then
+	echo "write_memo: failed to finalize memo write" 1>&2
+	exit 1
+fi
+
+
+# ==============================================================================
+# RESULTS
+# ==============================================================================
+num_bytes="$(wc -c < "$memo_md")"
+num_lines="$(wc -l < "$memo_md")"
+echo "memo recorded: $(basename -- "$memo_md") ($num_lines lines, $num_bytes bytes)"
