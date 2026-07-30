@@ -270,6 +270,7 @@ func run() (int, error) {
 	engine := &agent.Agent{
 		Client:       &llm.Client{APIKey: apiKey, BaseURL: baseURL, Model: model},
 		Tools:        registry,
+		ToolsDirs:    toolsDirs,
 		SystemPrompt: combinedSystemPrompt,
 		AllowExit:    *allowExit,
 	}

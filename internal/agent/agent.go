@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 
 	"github.com/toddky/menehune/internal/llm"
@@ -16,6 +17,9 @@ type ResponseStreamer interface {
 type Agent struct {
 	Client ResponseStreamer
 	Tools  *Registry
+	// ToolsDirs are the source tool dirs Setup linked from, kept so ReloadTools
+	// can re-link and rebuild the registry without restarting the process.
+	ToolsDirs []string
 	// SystemPrompt is sent as a system message ahead of the history when non-empty.
 	SystemPrompt string
 	// AllowExit advertises the internal exit tool so the model can terminate the agent process.
@@ -39,6 +43,48 @@ func (a *Agent) KillSubagents() {
 	for _, sub := range a.Subagents {
 		sub.Kill()
 	}
+}
+
+// ReloadTools re-links the source tool dirs and rebuilds the registry so schema
+// edits and added or removed tool files take effect without restarting the agent.
+// The live registry is swapped only on success, so a failed reload leaves the
+// working tool set intact. It returns the tool names added and removed since the
+// last load, each sorted. Turn re-reads Definitions() every turn, so the swapped
+// registry takes effect on the next prompt with no further wiring.
+func (a *Agent) ReloadTools() (added, removed []string, err error) {
+	// An empty ToolsDirs would re-run Setup with no sources and wipe the tool set;
+	// refuse loudly rather than silently leaving the agent with zero tools.
+	if len(a.ToolsDirs) == 0 {
+		return nil, nil, fmt.Errorf("reload tools: no source tool dirs recorded; set Agent.ToolsDirs")
+	}
+
+	previous := make(map[string]bool, len(a.Tools.Tools))
+	for name := range a.Tools.Tools {
+		previous[name] = true
+	}
+
+	if err := Setup(a.ToolsDirs...); err != nil {
+		return nil, nil, fmt.Errorf("reload tools: %w", err)
+	}
+	registry, err := LoadAll(filepath.Join(GetRuntimeDir(), "tools"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("reload tools: %w", err)
+	}
+
+	for name := range registry.Tools {
+		if !previous[name] {
+			added = append(added, name)
+		}
+		delete(previous, name)
+	}
+	for name := range previous {
+		removed = append(removed, name)
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+
+	a.Tools = registry
+	return added, removed, nil
 }
 
 // ExitRequest is returned as the Turn error when the model calls the exit tool.
