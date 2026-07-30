@@ -59,6 +59,12 @@ On startup the agent symlinks every tool script into a private per-instance dire
 (`$XDG_RUNTIME_DIR/agent-<pid>/tools`) and loads its tool registry from there, so different
 agent instances can run with different tool sets. The directory is removed on exit.
 
+The REPL `/reload` command rebuilds the tool registry without restarting: it re-links the
+source tool dirs (purging the runtime tools dir first, so removed tools drop their links)
+and re-runs discovery, then swaps the live registry only on success. This picks up schema
+edits and added or removed tool files; tool logic already updates live because dispatch
+re-execs the script on every call.
+
 ## Agent Exit Codes
 
 The `menehune` process itself exits with:
