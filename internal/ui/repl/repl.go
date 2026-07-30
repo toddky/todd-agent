@@ -107,6 +107,24 @@ func attachSubagent(engine *agent.Agent, name string) {
 	fmt.Printf("%s🤖 attached subagent %s%s\n", gray, name, reset)
 }
 
+// reloadTools rebuilds the tool registry so schema edits and added or removed
+// tool files take effect without restarting; the swap happens between turns.
+func reloadTools(engine *agent.Agent) {
+	added, removed, err := engine.ReloadTools()
+	if err != nil {
+		fmt.Printf("%s✗ %v%s\n", red, err, reset)
+		return
+	}
+	fmt.Printf("%s🔄 reloaded tools", gray)
+	if len(added) > 0 {
+		fmt.Printf(", added: %s", strings.Join(added, ", "))
+	}
+	if len(removed) > 0 {
+		fmt.Printf(", removed: %s", strings.Join(removed, ", "))
+	}
+	fmt.Printf("%s\n", reset)
+}
+
 // printEvent prints one engine event.
 // Tool activity is gray so it reads as machinery, not model output.
 func printEvent(event agent.Event) {
@@ -159,6 +177,12 @@ func Run(engine *agent.Agent, firstPrompt string) error {
 		// "&name" attaches a bundled agent as a subagent without running a model turn.
 		if strings.HasPrefix(prompt, "&") {
 			attachSubagent(engine, strings.TrimSpace(strings.TrimPrefix(prompt, "&")))
+			continue
+		}
+
+		// "/reload" rebuilds the tool registry without a model turn.
+		if strings.TrimSpace(prompt) == "/reload" {
+			reloadTools(engine)
 			continue
 		}
 
