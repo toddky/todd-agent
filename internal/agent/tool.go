@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/menehune/internal/llm"
 )
 
 // defaultToolTimeout applies when a tool's schema omits timeout_secs.

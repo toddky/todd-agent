@@ -10,11 +10,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/toddky/todd-agent/internal/agent"
-	"github.com/toddky/todd-agent/internal/llm"
-	"github.com/toddky/todd-agent/internal/ui/acp"
-	"github.com/toddky/todd-agent/internal/ui/oneshot"
-	"github.com/toddky/todd-agent/internal/ui/repl"
+	"github.com/toddky/menehune/internal/agent"
+	"github.com/toddky/menehune/internal/llm"
+	"github.com/toddky/menehune/internal/ui/acp"
+	"github.com/toddky/menehune/internal/ui/oneshot"
+	"github.com/toddky/menehune/internal/ui/repl"
 )
 
 // stringList collects a repeatable string flag in the order given.

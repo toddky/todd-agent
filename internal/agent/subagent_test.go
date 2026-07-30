@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/menehune/internal/llm"
 )
 
 // fakeChildScript speaks just enough of the ACP subset to drive Subagent:

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/menehune/internal/llm"
 )
 
 // fakeClient plays back scripted responses, one per CompleteStream call.

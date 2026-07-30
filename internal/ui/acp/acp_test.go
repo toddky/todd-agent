@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/toddky/todd-agent/internal/agent"
-	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/menehune/internal/agent"
+	"github.com/toddky/menehune/internal/llm"
 )
 
 // scriptedStreamer replays canned responses in order, streaming each response's

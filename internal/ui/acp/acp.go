@@ -18,8 +18,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/toddky/todd-agent/internal/agent"
-	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/menehune/internal/agent"
+	"github.com/toddky/menehune/internal/llm"
 )
 
 // protocolVersion is the ACP schema revision this subset targets.

@@ -1,4 +1,4 @@
-# todd-agent
+# menehune
 
 A coding agent built from scratch in Go. Calls the Anthropic Messages API
 directly with `net/http`; no external SDK.
@@ -14,14 +14,14 @@ directly with `net/http`; no external SDK.
 ## Build
 
 ```sh
-go build -o todd-agent .
+go build -o menehune .
 ```
 
 ## Run
 
 ```sh
 export ANTHROPIC_API_KEY=sk-...
-./todd-agent
+./menehune
 ```
 
 Optional environment variables:

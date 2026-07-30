@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/menehune/internal/llm"
 )
 
 // spawnTimeout bounds the initialize and session/new round-trips at spawn.
@@ -21,7 +21,7 @@ const spawnTimeout = defaultToolTimeout
 // 2s: the child exits on stdin EOF, so the grace only covers its cleanup.
 const killGrace = 2 * time.Second
 
-// Subagent is a child todd-agent process driven over the ACP subset
+// Subagent is a child menehune process driven over the ACP subset
 // (JSON-RPC 2.0 over stdio, one JSON object per line). The parent talks to
 // it through a synthetic subagent_<name> tool dispatched inside Turn.
 type Subagent struct {

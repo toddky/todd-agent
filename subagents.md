@@ -53,7 +53,7 @@ Current state that shapes the design:
 ### Proposal A: subagent as a plain tool script (`--oneshot` per call)
 
 **Concept.** A generic `tools/subagent` script whose input is `{"agent": "...", "prompt": "..."}`.
-It execs `todd-agent --agent <name> --oneshot --prompt <task>` and prints the child's answer.
+It execs `menehune --agent <name> --oneshot --prompt <task>` and prints the child's answer.
 
 **Semantics.** Stateless: every call is a fresh process with empty history. The parent
 model picks the agent by name. No engine changes at all.
@@ -70,7 +70,7 @@ agent, so restricting which subagents are reachable needs extra input validation
 ### Proposal B: engine-managed ACP child processes (recommended)
 
 **Concept.** The engine holds a set of named subagents. Each is a child process running
-`todd-agent --agent <name> --acp`, spoken to over stdio using the ACP subset acp.go
+`menehune --agent <name> --acp`, spoken to over stdio using the ACP subset acp.go
 already implements. Each subagent is advertised to the model as a synthetic tool
 `subagent_<name>` with input `{"prompt": "..."}`, dispatched inside `Turn` exactly like
 the `exit` tool — never exec'd from the tools dir.

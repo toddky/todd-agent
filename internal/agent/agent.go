@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/menehune/internal/llm"
 )
 
 // ResponseStreamer is the slice of the LLM client the agent loop needs; tests substitute a fake.

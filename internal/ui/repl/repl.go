@@ -13,8 +13,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/toddky/todd-agent/internal/agent"
-	"github.com/toddky/todd-agent/internal/llm"
+	"github.com/toddky/menehune/internal/agent"
+	"github.com/toddky/menehune/internal/llm"
 )
 
 const (

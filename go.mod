@@ -1,4 +1,4 @@
-module github.com/toddky/todd-agent
+module github.com/toddky/menehune
 
 go 1.24.2
 

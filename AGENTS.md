@@ -1,6 +1,6 @@
-# todd-agent Development Notes
+# menehune Development Notes
 
-**todd-agent** is a coding agent being built from scratch. These instructions apply to all agents working in this repository.
+**menehune** is a coding agent being built from scratch. These instructions apply to all agents working in this repository.
 
 ## Canon vs. Not Canon
 
@@ -11,7 +11,7 @@ Do not assume a plan or spec describes what is actually implemented; verify agai
 ## Directory Structure
 
 ```text
-todd-agent/
+menehune/
 ├── main.go              # entrypoint: wires the engine to a frontend
 ├── internal/
 │   ├── agent/           # engine — no terminal I/O allowed
@@ -61,7 +61,7 @@ agent instances can run with different tool sets. The directory is removed on ex
 
 ## Agent Exit Codes
 
-The `todd-agent` process itself exits with:
+The `menehune` process itself exits with:
 
 - `0` = success.
 - `3` = runtime error: bad flags, missing API key, tool discovery failure, or API failure.
