@@ -3,6 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -231,5 +233,59 @@ func TestTurnAdvertisesExitToolOnlyWhenAllowed(t *testing.T) {
 				t.Errorf("exit tool advertised = %v, want %v", sawExit, testCase.wantExit)
 			}
 		})
+	}
+}
+
+func TestReloadTools(t *testing.T) {
+	sourceDir := t.TempDir()
+	writeTool(t, sourceDir, "keep_tool", echoTool)
+	writeTool(t, sourceDir, "remove_tool", echoTool)
+
+	if err := Setup(sourceDir); err != nil {
+		t.Fatalf("Setup() error: %v", err)
+	}
+	defer func() {
+		if err := Cleanup(); err != nil {
+			t.Errorf("Cleanup() error: %v", err)
+		}
+	}()
+	registry, err := LoadAll(filepath.Join(GetRuntimeDir(), "tools"))
+	if err != nil {
+		t.Fatalf("LoadAll() error: %v", err)
+	}
+	engine := &Agent{Tools: registry, ToolsDirs: []string{sourceDir}}
+
+	// Drop one tool and add another, then reload: the registry must track the change.
+	if err := os.Remove(filepath.Join(sourceDir, "remove_tool")); err != nil {
+		t.Fatalf("remove source tool: %v", err)
+	}
+	writeTool(t, sourceDir, "new_tool", echoTool)
+
+	added, removed, err := engine.ReloadTools()
+	if err != nil {
+		t.Fatalf("ReloadTools() error: %v", err)
+	}
+
+	if len(added) != 1 || added[0] != "new_tool" {
+		t.Errorf("added = %v, want [new_tool]", added)
+	}
+	if len(removed) != 1 || removed[0] != "remove_tool" {
+		t.Errorf("removed = %v, want [remove_tool]", removed)
+	}
+	if _, known := engine.Tools.Tools["new_tool"]; !known {
+		t.Errorf("new_tool missing from registry after reload; got %v", engine.Tools.Tools)
+	}
+	if _, known := engine.Tools.Tools["remove_tool"]; known {
+		t.Errorf("remove_tool still in registry after reload")
+	}
+	if _, known := engine.Tools.Tools["keep_tool"]; !known {
+		t.Errorf("keep_tool missing from registry after reload")
+	}
+}
+
+func TestReloadToolsWithoutDirsFails(t *testing.T) {
+	engine := &Agent{Tools: emptyRegistry()}
+	if _, _, err := engine.ReloadTools(); err == nil {
+		t.Fatal("ReloadTools() with no ToolsDirs = nil error, want a failure")
 	}
 }
