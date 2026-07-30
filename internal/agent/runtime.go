@@ -40,6 +40,11 @@ func Setup(toolsDirs ...string) error {
 	}
 
 	toolsDir := filepath.Join(runtimeDir, "tools")
+	// Rebuild the tools dir from scratch each call so a reload drops links to
+	// tools deleted from the source dirs; first run has nothing to remove.
+	if err := os.RemoveAll(toolsDir); err != nil {
+		return fmt.Errorf("clear tools dir %s: %w", toolsDir, err)
+	}
 	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
 		return fmt.Errorf("create tools dir %s: %w", toolsDir, err)
 	}
