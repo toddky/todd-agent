@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,6 +26,66 @@ func (s *stringList) String() string {
 
 func (s *stringList) Set(value string) error {
 	*s = append(*s, value)
+	return nil
+}
+
+// bundledSubagents lists an agent's subagents/ dir: each entry is a symlink
+// to a sibling agent under agents/, and the entry name is the agent name.
+// A missing subagents/ dir means no subagents.
+func bundledSubagents(agentDir string) ([]string, error) {
+	subagentsDir := filepath.Join(agentDir, "subagents")
+	entries, err := os.ReadDir(subagentsDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read subagents dir %s: %w", subagentsDir, err)
+	}
+
+	agentsDir, err := filepath.EvalSymlinks(filepath.Dir(agentDir))
+	if err != nil {
+		return nil, fmt.Errorf("resolve agents dir: %w", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.Name() == ".gitkeep" {
+			continue
+		}
+		target, err := filepath.EvalSymlinks(filepath.Join(subagentsDir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("resolve subagent link %s: %w", entry.Name(), err)
+		}
+		// The child resolves --agent <name> against its own agents/ dir, so the
+		// link must point at a sibling agent; anywhere else would fail at spawn.
+		if filepath.Dir(target) != agentsDir {
+			return nil, fmt.Errorf("subagent link %s points outside agents/ (%s); link a sibling agent dir instead", entry.Name(), target)
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// checkSubagentCycle walks the subagents/ graph from root and errors on a
+// cycle (a -> b -> a). The whole graph is visible on the filesystem, so one
+// startup DFS proves termination; children then never need to re-check.
+// path holds the DFS stack from root to the current agent, in order.
+func checkSubagentCycle(agentsDir string, path []string) error {
+	current := path[len(path)-1]
+	names, err := bundledSubagents(filepath.Join(agentsDir, current))
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		for _, ancestor := range path {
+			if name == ancestor {
+				return fmt.Errorf("subagent cycle: %s -> %s; remove one of the subagents/ links", strings.Join(path, " -> "), name)
+			}
+		}
+		if err := checkSubagentCycle(agentsDir, append(path, name)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -115,6 +176,17 @@ func run() (int, error) {
 		if *oneshotMode && *prompt == "" && *promptFile == "" {
 			*promptFile = filepath.Join(agentDir, "prompt.md")
 		}
+		// One DFS over the on-disk subagents/ graph proves no delegation cycle
+		// (a -> b -> a) exists before any child spawns; the check errors instead
+		// of forking forever at runtime.
+		if err := checkSubagentCycle(filepath.Dir(agentDir), []string{*agentName}); err != nil {
+			return 3, err
+		}
+		bundled, err := bundledSubagents(agentDir)
+		if err != nil {
+			return 3, err
+		}
+		subagentNames = append(subagentNames, bundled...)
 	}
 
 	for _, name := range subagentNames {
