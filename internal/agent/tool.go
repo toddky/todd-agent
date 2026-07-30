@@ -53,7 +53,7 @@ type toolSchema struct {
 
 // Registry holds the tools discovered in one directory. Dispatch re-execs
 // the script on every call, so tool behavior can change while the agent
-// runs; schema changes need a reload (fresh LoadAll).
+// runs; schema changes and added or removed tools need a reload (Agent.ReloadTools).
 type Registry struct {
 	Dir   string
 	Tools map[string]Tool
