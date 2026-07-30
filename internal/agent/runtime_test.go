@@ -59,3 +59,40 @@ func TestSetupLaterDirWinsOnCollision(t *testing.T) {
 		t.Errorf("stderr = %q, warned about only_earlier which has no collision", warning)
 	}
 }
+
+func TestSetupPurgesStaleLinks(t *testing.T) {
+	sourceDir := t.TempDir()
+	writeTool(t, sourceDir, "keep_tool", echoTool)
+	writeTool(t, sourceDir, "remove_tool", echoTool)
+
+	if err := Setup(sourceDir); err != nil {
+		t.Fatalf("first Setup() error: %v", err)
+	}
+	defer func() {
+		if err := Cleanup(); err != nil {
+			t.Errorf("Cleanup() error: %v", err)
+		}
+	}()
+
+	// Drop one tool from the source and add another, then re-run Setup: the
+	// runtime tools dir must reflect the new source set, not the stale one.
+	if err := os.Remove(filepath.Join(sourceDir, "remove_tool")); err != nil {
+		t.Fatalf("remove source tool: %v", err)
+	}
+	writeTool(t, sourceDir, "new_tool", echoTool)
+
+	if err := Setup(sourceDir); err != nil {
+		t.Fatalf("second Setup() error: %v", err)
+	}
+
+	toolsDir := filepath.Join(GetRuntimeDir(), "tools")
+	if _, err := os.Lstat(filepath.Join(toolsDir, "remove_tool")); !os.IsNotExist(err) {
+		t.Errorf("remove_tool link still present after reload; Lstat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(toolsDir, "keep_tool")); err != nil {
+		t.Errorf("keep_tool missing after reload: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(toolsDir, "new_tool")); err != nil {
+		t.Errorf("new_tool missing after reload: %v", err)
+	}
+}
